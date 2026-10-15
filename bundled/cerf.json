@@ -1,0 +1,15 @@
+{
+  "device": "",
+  "video_driver_names_for_guest_additions": [
+    "ddi.dll",
+    "DeviceEmulator_lcd.dll",
+    "s3c2410disp.dll",
+    "ddi_tievm3530.dll",
+    "ddraw_ipu_sdc.dll",
+    "ddi_mq200.dll",
+    "ddi_ragexl.dll",
+    "ddraw_ipu.dll",
+    "ddi_vgx.dll"
+  ],
+  "bundle_repositories": []
+}

@@ -1,0 +1,367 @@
+- version: v8.0
+  date: TBA
+  changes: |
+    -
+- version: v7.0
+  date: 14 Oct 2026
+  devices:
+    new: |
+      Casio Cassiopeia E-55 support
+      Symbol Mk500 support (by @Katamaran21)
+      Siemens MP377 support (by @RaulMerelli)
+      Casio Toricomail: bezel touch buttons
+      Casio Cassiopeia E-700 support
+      Philips Velo 1: Various DRAM Miniature Card profiles
+      iPAQ H3660/H3670 support
+    fixed: |
+      Device Emulator: keyboard no longer drops or repeats keys while typing
+      Device Emulator: Windows Mobile 2003 SE no longer freezes
+      Casio Toricomail: fixed rendering crashes
+      Ford Sync 2: Massive rendering improvements, navigation maps and more (by @cavenderbi)
+      iPAQ H3100: fixed audio playback
+      iPAQ H3600: standard RAM size
+      Siemens SIMpad SL4: 64 MB RAM
+  emulator:
+    new: |
+      BREAKING: Device database has been updated, check your launcher and fix your entries before running on old values
+      Configurable display colour depth for Guest Additions and Device Emulator
+      Bundled CompactFlash cards can be auto-inserted at launch
+      Thumb32 support. Windows Embedded Compact 2013 is now supported
+      Right Click simulation mode for the stock stylus (synths LAlt+Tap)
+      Shutdown dialog has received reboot options
+      Host key is now reassignable
+      Improved UI and added notification cards
+      Catch up throttle multiplier knob (see in launcher)
+      CPU rate multiplier knob (see in launcher)
+    fixed: |
+      ARM JIT and JIT core full rewrite. ARM JIT/peripherals massive performance optimizations
+      Audio systems were reworked - less sound stuttering
+      Media instructions for Zune 30 - music is now playable
+      System clock improvements
+      Keyboard input no longer stops working after switching to another window and back
+    deleted: |
+      Memory visualizer
+  launcher:
+    new: |
+      Feedback window listing GitHub issues
+      Copyright issues contact window
+      Configurable update channel
+      UI revamp and optimizations
+      Configurable board types, ROM and storage sources
+      CPU Configuration
+    fixed: |
+      Launcher does not wait depend on internet connection and it's speed to let you use it
+      Toolbar buttons are now properly trimmed when not enough width
+  guest_additions:
+    new: |
+      Virtual Ethernet adapter
+      Persistant customization/settings from CERF UI
+      Windows Embedded Compact 2013 support
+      Font size override support
+      Stylus simulation mode for the mouse pointer
+      Shared folders on Windows CE 2.0
+      Driver automatically disables system-wide signature checks on Windows Mobile
+      Hack to the WinCE shell for Ford SYNC 2
+      ClearType support (by @RaulMerelli) and configuration
+    fixed: |
+      Pre-OS graphics (stock framebuffer) is now visible too and usable (switch to GA inputs is deferred now)
+      Crash when drawing off-screen (GiNi)
+      Default colour depth is now 24bpp instead of 32bpp - fixes Device Emulator Windows Mobile 6.5 shell rendering
+      Colour corruption in 16bpp mode - alpha-blended elements rendered green/cyan
+      Gradients on WM 2003 - the taskbar and application backgrounds render again
+      Mouse and keyboard no longer stop working for the whole session when input arrives early during boot
+      Crash/artifacts when scrolling under complex rendering
+      Apps run from a shared folder no longer crash
+      Shared folders no longer crash Explorer on Windows CE .NET
+      Fixed memory errors on Windows CE 6 branch
+      Fixed shared storage caps
+  ce_apps:
+    new: |
+      romdump: SH3 support
+      romdump: universal reset vector presets for MIPS and SH3
+
+- version: v6.7
+  date: 23 Jul 2026
+  devices:
+    new: |
+      Casio Cassiopeia EM-500 support (bare bones)
+    fixed: |
+      Sharp Mobilon HC-4100: fixed suspend crash
+  emulator:
+    new: |
+      Discord Rich Presence - shows the current device and OS in your Discord profile
+      UI updates
+    fixed: |
+      Fixed framebuffer not relatching on suspend/resume
+      Fixed 100% CPU usage and UI deadlocks on Windows XP on non-framebuffer tabs
+  launcher:
+    new: |
+      UI refresh
+    fixed: |
+      Metadata-only remote updates no longer re-download the entire ROM
+      Fixed the command-line interface producing no output
+      Configuration, updates and removal are now blocked while a device is running
+      Single click on a device preview now launches it everywhere
+      Merged the two launcher builds into a single Windows Vista+ executable
+    deleted: |
+      Removed the redundant soc_family and board_name fields from cerf.json
+  guest_additions:
+    new: |
+      High refresh rate support - use Windows CE with 240 hz display! (Or whatever Hz you have). Yes, this should be taken LITERALLY. WinCE WILL render 240 fps on your 240 hz monitor. The guest video mode and host window scanout follow the host monitor's refresh rate
+      --screen-refresh-rate flag to set the refresh rate manually
+      Touch-calibration helper - offers to switch to the stock input device when the guest opens a calibration screen, and switches back afterwards
+      Color scheme overrides - colorize grayscale devices with a forced system color scheme
+    fixed: |
+      Input devices now run at the proper priority, staying responsive under heavy guest CPU load
+  ce_apps:
+    fixed: |
+      CerfDemo: UI and performance improvements
+
+- version: v6.6
+  date: 18 Jul 2026
+  devices:
+    fixed: |
+      Fixed Device Emulator crash booting Windows Mobile 5.2 ROMs
+  emulator:
+    fixed: |
+      Device names with spaces and absolute rom.* paths in cerf.json are now supported
+  launcher:
+    new: |
+      **New-device wizard**: create a device profile from your local ROM dump
+      Rename a device from its right-click menu
+
+- version: v6.5
+  date: 17 Jul 2026
+  devices:
+    new: |
+      Sharp Mobilon HC-4100 support (Handheld PC, Windows CE 2.0)
+      Casio Toricomail support
+  emulator:
+    fixed: |
+      Fixed Integer scale 2x/3x not resizing the window under "Match guest size"
+      Fixed moving the window releasing the "Match guest size" lock (now only a resize does)
+  launcher:
+    new: |
+      Added downloads count sort
+  ce_apps:
+    fixed: |
+      Fixed bundled CE2 apps (ROM dumper and others) crashing on launch - their coredll imports were bound by version-specific ordinal instead of by name
+  guest_additions:
+    fixed: |
+      Display driver unified onto a single mips1 build across MIPS devices
+
+- version: v6.4
+  date: 15 Jul 2026
+  devices:
+    fixed: |
+      Fixed NEC MP700 touch
+
+- version: v6.3
+  date: 15 Jul 2026
+  devices:
+    fixed: |
+      Fixed a crash when PC Card was re-inserted too fast in DevEmu boards
+  emulator:
+    fixed: |
+      UI updates
+      Dev only: SDK/Build tools reorganization
+  launcher:
+    new: |
+      Added multiple bundle repositories configuration
+  guest_additions:
+    fixed: |
+      Fixed IMGFS ROMs regression introduced in v6.0
+      Software rendering is fully removed and replaced with hardware rendering. Microsoft dependencies dropped.
+      Fixed incorrect hardware communication approach for display and shared storage. Now rendering and shared storage is stable.
+
+- version: v6.2
+  date: 12 Jul 2026
+  emulator:
+    new: |
+      cerf.exe now runs on Windows XP and newer - one binary, XP through 11
+    fixed: |
+      Fixed a crash on startup on every Windows older than 10 1809 (dark-mode init)
+  launcher:
+    new: |
+      launcher_vista.exe: the launcher for Windows Vista and newer
+
+- version: v6.1
+  date: 12 Jul 2026
+  devices:
+    new: |
+      Nino 300 support (Palm-size PC)
+      Philips Velo 1 support (Windows CE 1.0)
+      NEC MP700: received built-in serial functionality
+  emulator:
+    new: |
+      Built-in serial support
+    fixed: |
+      Serial forwarder bugs fixed, ActiveSync now works
+  launcher:
+    new: |
+      Full upgrade routine - click a button to upgrade your installation
+  website:
+    new: |
+      https://cerf.cx - the official website with guides
+
+- version: v6.0
+  date: 10 Jul 2026
+  devices:
+    new: |
+      NEC Rockhopper SG2_VR5500 support
+      NEC MobilePro 700 support
+      Ford Sync 2 bare-bones support
+      Microsoft Reference Platform: added full PS/2 key mapping set
+      Zune 30: added audio
+  emulator:
+    new: |
+      MIPS JIT engine
+    fixed: |
+      UX/UI improvements
+    deleted: |
+      Removed heuristics board detector - it was a bad non-scalable conception, now you need to specify board ID directly. This also lets users to run ROMs on other boards. Obviously if it's not the same device the chance it will work is around 0%.
+  launcher:
+    new: |
+      Full redesign: save settings, fully new layout, multidownload, live/suspened screen previews
+  ce_apps:
+    new: |
+      Added tools\fileserver.py in build directory (simple directory serving web server)
+      romdump.exe for MIPS updated to emit MIPS1 code, support CE 2.0 and maybe 1.0 too, and now includes several real MIPS CPUs, + full UI redesign
+  guest_additions:
+    new: |
+      CE 2.0 support (display only so far)
+
+- version: v5.0
+  date: 18 Jun 2026
+  devices:
+    new: |
+      New boards booting: Jornada 820, Siemens SIMpad SL4, Siemens SIMATIC HMI TP 177B, NEC MobilePro 900 Series, SmartBook G138
+      Added HP Palmtop VGA (F1252A) card
+      PC Cards: Serial modem emulator and serial forwader
+      SA-1110, PXA255 RTC implementation
+      Falcon 4220 main battery wiring (fixes the idle suspend problem)
+      Suspend feature support for different SoCs
+      Ipaq 1st gen: microphone support
+    fixed: |
+      iPaqs now use original .nbf format instead of normalized .nb0. **Upgrade bundle in launcher!**
+      Soft/hard reset fixes for some SoCs
+  emulator:
+    new: |
+      Experimental hibernation/state saving system for all boards
+      Added Keyboard mapping window for boards with keyboard
+    fixed: |
+      UI refresh/updates for CERF and launcher
+  ce_apps:
+    new: |
+      ce_apps/xplorer.exe - dependency-free minimal shell, CE2+, useful for Zune 30 GA mode
+  guest_additions:
+    new: |
+      DDraw export (now Zune and friends render, but might be broken in some cases)
+      Change resolution on Windows CE 3 at runtime with soft reset
+      Keyboard support
+      Windows CE 2.11 support
+      DPI support
+    fixed: |
+      IMGFS injection fixes (e.g. WM >= 6)
+      XIP injection improvements
+
+- version: v4.0
+  date: 8 Jun 2026
+  devices:
+    new: |
+      NE2000 is now hot pluggable in all boards that support PCMCIA
+      Compact Flash too with configurator/generator
+      iPaq 1st gen now has extensions sleeve emulated (for PCMCIA support)
+    fixed: |
+      iPaq H3100: monochrome screen inversion fixed
+      NE2000 internet delivery hangs are fixed
+      Jornada720/SA1110/JIT updates to make it boot Linux-based OS
+  emulator:
+    new: |
+      Soft/hard reset your device in Actions menu (might be broken for some SoCs) + corresponding SoC/peripheral updates
+    fixed: |
+      Various UI/general fixes, improvements
+  launcher:
+    new: |
+      Optional packages feature
+  guest_additions:
+    new: |
+      Task manager on host - see process list, switch to processes, kill and run right from HOST window
+      Complete overhaul of XIP injection (Now you can boot Jornada 720 in 4K. Also suddenly Zune 30 is in the game too)
+
+- version: v3.21
+  date: 6 Jun 2026
+  devices:
+    new: |
+      iPaq H3100 support
+      Jornada 720 support
+    fixed: |
+      iPaq H3100,H3600 PPC2002 sound fixes
+  emulator:
+    fixed: |
+      JIT/MMU improvements
+
+- version: v3.20
+  date: 5 Jun 2026
+  devices:
+    new: |
+      Falcon 4220 board MVP support
+  launcher:
+    fixed: |
+      Updates
+
+- version: v3.11 (For Workgroups)
+  date: 4 Jun 2026
+  devices:
+    new: |
+      Falcon 4220 board partial implementation (OS boots to UI but hangs)
+  emulator:
+    fixed: |
+      Various bug fixes and improvements
+  guest_additions:
+    new: |
+      Accelerated mouse pointer (configurable at runtime; scroll wheel on newer OS)
+      Shared folders with host
+      Auto screen resolution change on host window resize
+    fixed: |
+      Various video driver improvements/fixes
+
+- version: v3.0
+  date: 2 Jun 2026
+  devices:
+    new: |
+      OMAP 3530 EVM board support (MVP)
+      Zune 30 board support (MVP)
+  emulator:
+    new: |
+      Massive UI overhaul
+      ARMv5,v6,v7 VFP/NEON MVP support, massive JIT improvements
+    fixed: |
+      Tons of bug fixes and improvements
+  guest_additions:
+    new: |
+      Injects own video driver into ROMs
+
+- version: v2.0
+  date: 19 May 2026
+  devices:
+    new: |
+      DevEmu, iPAQ H3600, Microsoft ODO support (MVP)
+  emulator:
+    new: |
+      Initial release
+      ARMv4 support
+
+- version: v1.0
+  date: Vaporware
+  changes: |
+    Rewrite of WCECL from scratch (Feb 2026) with an ARM emulator backend; ran Solitaire like the original x86 WCECL.
+    User-space CE emulator built on mocking COREDLL.DLL. Ran several CE shells (CE 5 best), plus a heuristically reconstructed Windows Mobile 5 shell.
+    Scope collapsed: CE COM is a user-space driver, kernel API traps differ per CE version, forcing per-version strategies until it had quietly become a sloppy kernel + MMU rewrite of every CE version.
+    Died on Win32 per-process object limits and leaking APIs. Replaced by v2 - a real silicon emulator.
+
+- version: WCECL
+  date: Vaporware
+  changes: |
+    Windows CE Compatibility Layer (https://github.com/dz333n/wcecl), 2019 - a shim DLL repointing COREDLL.DLL APIs to desktop Win32 to run x86-built CE apps.
+    Ran Solitaire and cmd.exe (contributions from @veselcraft and @TheNNX), but only a few x86 apps - never real MIPS or ARM binaries.

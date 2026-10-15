@@ -1,0 +1,47 @@
+name: site
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/website/**"
+      - "docs/changelog.yml"
+      - "bundled/db.json"
+      - "compile_readme.py"
+      - "tools/build_site.py"
+      - "cerf/version.h"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: site
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/website/requirements.txt
+
+      - name: Install site toolchain
+        run: pip install -r docs/website/requirements.txt
+
+      - name: Build site
+        run: python tools/build_site.py
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy build/site --project-name=cerf --branch=main

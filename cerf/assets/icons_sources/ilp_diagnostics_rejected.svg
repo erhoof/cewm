@@ -1,0 +1,23 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<!-- Art style references in cerf/assets/icons_sources: board.svg (chip detail); sd_map.svg (blue and gold accents). -->
+<path d="M3.5 4V2.5H12.5M10.5 0.75L12.5 2.5L10.5 4.25" stroke="#96752E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M3.5 4V2.5H12.5M10.5 0.75L12.5 2.5L10.5 4.25" stroke="#E8BF65" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12.5 12V13.5H3.5M5.5 11.75L3.5 13.5L5.5 15.25" stroke="#266E94" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12.5 12V13.5H3.5M5.5 11.75L3.5 13.5L5.5 15.25" stroke="#71BED5" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M0.5 6.5H6.5M0.5 9.5H6.5M9.5 6.5H15.5M9.5 9.5H15.5" stroke="#80888E" stroke-linecap="round"/>
+<path d="M6 8H10" stroke="#80888E"/>
+<g fill="url(#chip)" stroke="#4B555C" stroke-width="0.8" stroke-linejoin="round">
+<rect x="1.5" y="5.5" width="4" height="5" rx="0.5"/>
+<rect x="10.5" y="5.5" width="4" height="5" rx="0.5"/>
+</g>
+<path d="M2.5 7H4.5M2.5 8H4.5M11.5 7H13.5M11.5 8H13.5" stroke="#D8E0E5" stroke-width="0.55"/>
+<path d="M2.5 9.3H3.5M11.5 9.3H12.5" stroke="#88C76E" stroke-width="0.75"/>
+<path d="M12 1L15.5 7.5H8.5L12 1Z" fill="#E8BF65" stroke="#FFF4D7" stroke-width="0.8" stroke-linejoin="round"/>
+<path d="M12 3.5V4.9" stroke="#65532D" stroke-width="1" stroke-linecap="round"/>
+<circle cx="12" cy="6.3" r="0.5" fill="#65532D"/>
+<defs>
+<linearGradient id="chip" x1="0" y1="5.5" x2="0" y2="10.5" gradientUnits="userSpaceOnUse">
+<stop stop-color="#87949E"/><stop offset="1" stop-color="#424E58"/>
+</linearGradient>
+</defs>
+</svg>

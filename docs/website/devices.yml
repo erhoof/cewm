@@ -1,0 +1,51 @@
+# The device row on the front page.
+#
+# Each device is a folder under docs/website/content/assets/devices/. Drop any
+# number of screenshots in it: the tile cycles through them, sorted by file name
+# (01_desktop.png, 02_word.png, ... controls the order). One image = a static
+# tile; an empty or missing folder is skipped, so half-filled entries are fine.
+#
+# Capture the guest surface 1:1 with CERF's own screenshot action, not a window
+# grab. Keep one device's shots at the same resolution, or the crossfade jumps.
+#
+#   - dir:    folder under content/assets/devices/
+#     device: device name shown on the tile
+#     os:     guest OS shown under the device name
+#     wide:   true for a wider tile, for a landscape guest (optional)
+
+devices:
+  - dir: velo1
+    device: Philips Velo 1
+    os: Windows CE 1.0, CE 2.0
+
+  - dir: jornada820
+    device: Jornada 820
+    os: Handheld PC 3.0 Professional
+
+  - dir: jornada720
+    device: Jornada 720
+    os: Handheld PC 2000
+
+  - dir: simpad_sl4
+    device: Siemens SIMpad SL4
+    os: Handheld PC 2000, CE .NET
+
+  - dir: omap3530_ce7
+    device: OMAP 3530 EVM
+    os: Windows CE 7, Compact 2013
+
+  - dir: nino300
+    device: Philips Nino 300
+    os: Palm-size PC
+
+  - dir: ipaq_h3600
+    device: Compaq iPAQ H3600
+    os: Pocket PC 2000/2002
+
+  - dir: zune30
+    device: Zune 30
+    os: Windows CE 5
+
+  - dir: devemu
+    device: MS Device Emulator
+    os: Windows Mobile, Windows CE

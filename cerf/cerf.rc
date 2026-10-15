@@ -1,0 +1,77 @@
+#include <winver.h>
+#include "version.h"
+
+APPICON ICON "assets/cerf_running.ico"
+1 ICON "assets/cerf_running.ico"
+2 ICON "assets/suspend.ico"
+
+/* built from assets/icons_sources/*.svg by tools/make_icons.py. */
+ICON_GA                  ICON "assets/ga_autoresize.ico"
+ICON_GA_DISABLED         ICON "assets/ga_autoresize_disabled.ico"
+ICON_LOCK_ON             ICON "assets/lock_on.ico"
+ICON_LOCK_OFF            ICON "assets/lock_off.ico"
+ICON_INPUT_GA_POINTER    ICON "assets/ga_cursor.ico"
+ICON_INPUT_PS2_MOUSE     ICON "assets/cursor.ico"
+ICON_INPUT_STYLUS        ICON "assets/stylus.ico"
+ICON_DISPLAY             ICON "assets/display.ico"
+ICON_KEYBOARD            ICON "assets/keyboard.ico"
+ICON_GA_KEYBOARD         ICON "assets/ga_keyboard.ico"
+ICON_SPEAKER             ICON "assets/speaker.ico"
+ICON_SPEAKER_ACTIVE      ICON "assets/speaker_active.ico"
+ICON_PCMCIA_EMPTY        ICON "assets/pcmcia.ico"
+ICON_PCMCIA_CARD         ICON "assets/pcmcia_enabled.ico"
+ICON_PCMCIA_CF           ICON "assets/pcmcia_enabled_cf.ico"
+ICON_PCMCIA_ETHERNET     ICON "assets/pcmcia_enabled_ethernet.ico"
+ICON_PCMCIA_VGA          ICON "assets/pcmcia_enabled_vga.ico"
+ICON_PCMCIA_RAM          ICON "assets/pcmcia_enabled_ram.ico"
+ICON_PCMCIA_SERIAL_COM   ICON "assets/pcmcia_enabled_serial_com.ico"
+ICON_PCMCIA_SERIAL_MODEM ICON "assets/pcmcia_enabled_serial_modem.ico"
+ICON_SERIAL_EMPTY        ICON "assets/serial.ico"
+ICON_SERIAL_COM          ICON "assets/serial_com.ico"
+ICON_SERIAL_MODEM        ICON "assets/serial_modem.ico"
+ICON_USB                 ICON "assets/usb.ico"
+ICON_USB_FORD_FLASHER    ICON "assets/usb_ford_flasher.ico"
+ICON_SD_MAP              ICON "assets/sd_map.ico"
+ICON_CAR                 ICON "assets/car.ico"
+ICON_ILP_DIAGNOSTICS     ICON "assets/ilp_diagnostics.ico"
+ICON_ILP_DIAGNOSTICS_REJECTED ICON "assets/ilp_diagnostics_rejected.ico"
+
+CERF_LOGO        RCDATA "assets/cerf_1024.png"
+
+FONT_PLEX_SANS           RCDATA "assets/fonts/IBMPlexSans-Regular.ttf"
+FONT_PLEX_SANS_BOLD      RCDATA "assets/fonts/IBMPlexSans-Bold.ttf"
+FONT_PLEX_MONO_BOLD      RCDATA "assets/fonts/IBMPlexMono-Bold.ttf"
+
+/* about_band_*.png built from assets/icons_sources/about_band.svg by
+   tools/make_icons.py --targets band; picked per-DPI at runtime. */
+ABOUT_BAND_100   RCDATA "assets/about_band_100.png"
+ABOUT_BAND_125   RCDATA "assets/about_band_125.png"
+ABOUT_BAND_150   RCDATA "assets/about_band_150.png"
+ABOUT_BAND_200   RCDATA "assets/about_band_200.png"
+ABOUT_BAND_300   RCDATA "assets/about_band_300.png"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    CERF_VERSION_MAJOR,CERF_VERSION_MINOR,CERF_VERSION_PATCH,CERF_VERSION_BUILD_WORD
+ PRODUCTVERSION CERF_VERSION_MAJOR,CERF_VERSION_MINOR,CERF_VERSION_PATCH,CERF_VERSION_BUILD_WORD
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName",      "Yaroslav Kibysh"
+            VALUE "FileDescription",  "CE Runtime Foundation"
+            VALUE "FileVersion",      CERF_VERSION_DISPLAY_STR
+            VALUE "InternalName",     "cerf"
+            VALUE "LegalCopyright",   "Copyright (c) Yaroslav Kibysh"
+            VALUE "OriginalFilename", "cerf.exe"
+            VALUE "ProductName",      "CE Runtime Foundation"
+            VALUE "ProductVersion",   CERF_VERSION_DISPLAY_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04E4
+    END
+END

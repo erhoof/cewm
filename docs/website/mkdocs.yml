@@ -1,0 +1,131 @@
+site_name: CE Runtime Foundation
+site_description: Universal Windows CE emulator - Run Windows CE 1.0 through Windows Embedded Compact 2013
+site_url: https://cerf.cx/
+repo_url: https://github.com/gweslab/cerf
+repo_name: gweslab/cerf
+copyright: >-
+  &copy; 2019-{cur_year}
+  <a href="https://yaroslavkibysh.com" target="_blank" rel="noopener">Yaroslav Kibysh</a>
+
+docs_dir: content
+site_dir: ../../build/site
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  logo: assets/img/cerf.svg
+  favicon: assets/img/cerf.ico
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - toc.follow
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme)"
+      primary: black
+      accent: purple
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+nav:
+  - Home: index.md
+  - Download: download.md
+  - Devices: devices.md
+  - Articles:
+      - articles/index.md
+      - Guest Additions: articles/guest-additions.md
+      - PC Cards and serial ports: articles/pc-cards.md
+      - Save and restore: articles/hibernation.md
+      - Command line: articles/command-line.md
+      - Getting the guest online: articles/networking.md
+      - Touch and mouse: articles/pointer-input.md
+      - Running your own ROM: articles/own-rom.md
+      - The configuration files: articles/cerf-json.md
+      - ROM bundle repositories: articles/bundle-repositories.md
+      - Connecting to ActiveSync: articles/activesync.md
+      - Windows CE ROM containers: articles/rom-containers.md
+      - Send feedback: /feedback
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.keys
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - assets/cerf.css
+  - assets/rail.css
+
+extra_javascript:
+  - assets/reveal.js
+  - assets/slideshow.js
+  - assets/scene.js
+  - assets/rail.js
+
+extra:
+  analytics:
+    provider: google
+    property: G-F3KZ6CR3GD
+  consent:
+    title: Cookie consent
+    description: >-
+      We use cookies to measure the reach of our documentation and whether
+      visitors find what they came for. With your consent, you help us improve
+      the site.
+    actions:
+      - accept
+      - reject
+      - manage
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/gweslab/cerf
+      name: CERF on GitHub
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/QREE9Y2v2d
+      name: CERF on Discord
+    - icon: fontawesome/brands/patreon
+      link: https://www.patreon.com/dz3n
+      name: Support CERF on Patreon
+
+plugins:
+  - search
+
+hooks:
+  - hooks/render.py
