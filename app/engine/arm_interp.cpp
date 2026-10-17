@@ -1,3 +1,4 @@
+#include <map>
 #include "arm_interp.h"
 
 #include <algorithm>
@@ -64,6 +65,9 @@ struct DynCore;
 // Block-cache statistics (diagnostics, printed by the headless test).
 uint64_t g_idle_hits = 0;
 static const bool kRegChk = getenv("CEWM_REGCHK") != nullptr;
+static const bool kNoBlock = getenv("CEWM_NOBLOCK") != nullptr;  // debug: single-step through Step() only
+static const bool kSysTrace = getenv("CEWM_SYSTRACE") != nullptr;
+static const bool kPcHooks = getenv("CEWM_PCHOOKS") != nullptr;  // trace-manager PC hooks (kernel debug text of some boards); looked up at block entries only
 static const bool kIdleSkip = getenv("CEWM_NOIDLESKIP") == nullptr;  // see Impl::BuildBlock: the WM idle spin turns into a host-side wait
 uint64_t g_blk_runs = 0, g_blk_chained = 0, g_blk_slow = 0, g_blk_builds = 0, g_blk_ops = 0, g_blk_step = 0;
 
@@ -787,6 +791,9 @@ InterpStep ArmInterp::Impl::RunBlock(uint32_t* executed) {
     const bool user = st.cpsr.bits.mode == ArmMode::kUser;
     const bool thumb = Thumb();
     Block* b = nullptr;
+    if (kPcHooks && e.Host().HasPcTrace(pc)) e.Host().OnArmPcTrace(pc, st.gprs, st.cpsr.word);
+    if (kSysTrace && pc >= 0xF0000000u && pc < 0xF0010000u + 4u) { static std::map<std::pair<uint32_t, uint32_t>, unsigned> m; static unsigned tot; m[{pc, st.gprs[14]}]++; if (pc == 0xF000E3ECu) { static int k; if (k++ % 400 == 0) fprintf(stderr, "[SYS7] r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X\n", st.gprs[0], st.gprs[1], st.gprs[2], st.gprs[3], st.gprs[13], st.gprs[14]); } if (++tot % 3000 == 0) { fprintf(stderr, "[SYS] --- tot=%u\n", tot); for (auto& kv : m) fprintf(stderr, "[SYS] trap=%08X hid=%u mid=%u lr=%08X x%u\n", kv.first.first, (0x10000 - (kv.first.first & 0xFFFF)) / 4 / 256, ((0x10000 - (kv.first.first & 0xFFFF)) / 4) % 256, kv.first.second, kv.second); } }
+    if (kNoBlock) { last_blk = nullptr; *executed = 1; return Step(); }
     if (kRegChk) {  // CEWM_REGCHK=1: rolling hash of the architectural state at every block entry; compare two builds at the same block counts
         static uint64_t h = 1469598103934665603ull, n = 0;
         for (int r = 0; r < 16; ++r) h = (h ^ st.gprs[r]) * 1099511628211ull;
@@ -916,6 +923,7 @@ done_fall:
     R(15) = next;
 done:
     if (kIdleSkip && b->idle && ram_only && !stop && i == b->n && R(15) == b->va && !st.cpsr.bits.irq_disable) { ++g_idle_hits; chan.EnterIdle(); stop = true; }
+    if (!stop && !st.cpsr.bits.irq_disable && chan.Level()) stop = true;  // a CPSR write may just have unmasked a pending IRQ (SA-1110 idle wakes with it pending): leave the slice so Run() takes it at once
     ++g_blk_runs;
     g_blk_ops += i;
     *executed = i;

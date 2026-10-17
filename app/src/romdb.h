@@ -37,6 +37,13 @@ inline const Known kKnown[] = {
     {"aae0c07d7a94a629f58aef073cd7d2fa37cc04fd477be8347898a502de3d48f4", "Windows Mobile 6.1 (480x480)", "devemu_vga", 480, 480, false},
     {"4f78c4ad80b8534bf22d08dbd5d400129962d1a99b436895197a66a40ed7b429", "Windows CE 5.0 (русский, 800x480)", "devemu_wvga", 800, 480, true},
     {"9596da16dcf8ae77e0f957370c332f1ce2ecc3894c29bd2fddaa23e5a124d668", "Windows Embedded CE 6.0 (русский, 800x480)", "devemu_wvga", 800, 480, true},
+    {"0385d9dca9f6faea1d4d5d3a19f9b4fd70098fcfd9612a969793735bda8e59b5", "Windows CE .NET 4.1 (SIMpad SL4)", "simpad_sl4", 800, 600, true},
+    {"f9cda1f75576a0cd2696044a36d3eec1e32090fabbf369171f3a822093bf2046", "Handheld PC 2000 (SIMpad SL4)", "simpad_sl4", 800, 600, true},
+    {"08921ed68730ee284f581668a07834ddf40606229627a75c496300a07a951063", "Pocket PC 2000 (iPAQ H3100)", "ipaq_h31xx", 240, 320, true},
+    {"091dbde74c7678c32c8fd69c3004424c08be4068263e5e94690c7c9c039deebc", "Pocket PC 2002 (iPAQ H3100)", "ipaq_h31xx", 240, 320, true},
+    {"f7cb7bef6d00098f5ff99d690e46a70d31994a3b285aa3453532218260cde5e4", "Pocket PC 2000 (iPAQ H3600)", "ipaq_h36xx", 240, 320, true},
+    {"257c53a78c73def54b0a24c743d4bc3f0ff9a2fdb4d835250be2e71eb27ffc08", "Pocket PC 2002 (iPAQ H3600)", "ipaq_h36xx", 240, 320, true},
+    {"bbad3911d7e5aa72d4fdb4f12fd074bf7223b638863719374762eb01f903c4bd", "Handheld PC 2000 (Jornada 720)", "jornada_720", 640, 240, true},
 };
 
 inline const Known* Find(const std::string& sha) {

@@ -32,6 +32,8 @@
 #include "fonts/NotoSansBold.h"
 #include "theme.h"
 #include "romdb.h"
+#include "rom_download.h"
+#include "catalog.h"
 
 #ifdef CEWM_WAYLAND
 #include <SDL_syswm.h>
@@ -43,7 +45,8 @@ namespace {
 #ifdef CEWM_ON_PHONE
 constexpr int kVirtScale = 1;
 #else
-constexpr int kVirtW = 1080, kVirtH = 2400, kVirtScale = 3;  // laptop: virtual phone drawn at 360x800
+constexpr int kVirtScale = 3;
+int kVirtW = 1080, kVirtH = 2400;  // laptop: virtual phone drawn at 360x800; --win WxH (window pixels) makes it any size, e.g. 900x700 for a landscape board
 #endif
 
 struct Settings {
@@ -73,6 +76,9 @@ struct Settings {
 } g_s;  // the running VM (or the command-line run)
 
 inline int FixedW() { return g_s.keep_w ? g_s.fixed_w : 0; }
+
+// Downloaded ROMs wait here until a VM that uses one is saved.
+constexpr const char* kStageDir = "/tmp/cewm-dl";
 
 std::string Home() { const char* h = getenv("HOME"); return h ? h : "/tmp"; }
 
@@ -154,6 +160,8 @@ bool WritePref(const std::string& path, const Settings& s) {
 
 enum class Mode { Launcher, Emu } g_mode = Mode::Launcher;
 
+SDL_Window* g_win = nullptr;
+bool g_win_forced = false;  // --win given: keep that size
 float g_dispW = 0, g_dispH = 0;                    // set each frame from ImGui
 std::atomic<bool> g_booting{false}, g_started{false};
 std::thread g_boot_thread;
@@ -250,9 +258,12 @@ bool SavedSizeIn(const std::string& dir, const std::string& key, const Settings&
     if (DIR* d = opendir(dir.c_str())) {
         while (dirent* e = readdir(d)) {
             int sw, sh, used = 0;
-            if (strncmp(e->d_name, prefix.c_str(), prefix.size()) || sscanf(e->d_name + prefix.size(), "%dx%d%n", &sw, &sh, &used) != 2 ||
-                tail != e->d_name + prefix.size() + used)
-                continue;
+            if (strncmp(e->d_name, prefix.c_str(), prefix.size())) continue;
+            // Cut the tail off first: with radio and GA off it is just "0.img", so "800x600" + "0.img" would read as height 6000.
+            const std::string rest = e->d_name + prefix.size();
+            if (rest.size() <= tail.size() || rest.compare(rest.size() - tail.size(), tail.size(), tail) != 0) continue;
+            const std::string mid = rest.substr(0, rest.size() - tail.size());
+            if (sscanf(mid.c_str(), "%dx%d%n", &sw, &sh, &used) != 2 || (size_t)used != mid.size()) continue;
             struct stat st;
             if (stat((dir + "/" + e->d_name).c_str(), &st) == 0) all.push_back({st.st_mtime, dir + "/" + e->d_name});
             if (stat((dir + "/" + e->d_name).c_str(), &st) == 0 && (!found || st.st_mtime > newest)) { found = true; newest = st.st_mtime; *w = sw; *h = sh; }
@@ -284,6 +295,14 @@ Uint32 g_resize_watch_at = 0;
 Uint32 g_resize_at = 0;
 
 void StartEmu() {
+#ifndef CEWM_ON_PHONE
+    if (g_win && g_s.fixed_w > g_s.fixed_h && g_s.fixed_h > 0 && !g_win_forced) {  // laptop: a landscape board gets a landscape window, not the 360x800 phone
+        const int ww = g_s.fixed_w * 6 / 5, wh = g_s.fixed_h * 5 / 4 + 80;
+        kVirtW = ww * kVirtScale; kVirtH = wh * kVirtScale;
+        SDL_SetWindowSize(g_win, ww, wh);
+        SDL_SetWindowPosition(g_win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+#endif
     const std::string key = StateKey(g_s.rom);
     int dw, dh, sw, sh;
     GuestSizeFor(g_s.rot & 1 ? g_dispH : g_dispW, g_s.rot & 1 ? g_dispW : g_dispH, &dw, &dh);
@@ -363,10 +382,10 @@ std::string CleanName(const std::string& in) {
     return o.empty() ? "Generic VM" : o;
 }
 
-// `orig`: the VM being edited keeps its own name; any other taken name gets " 2", " 3", ...
+// `orig`: the VM being edited keeps its own name; any other taken name gets "_1", "_2", ...
 std::string UniqueName(const std::string& base, const std::string& orig) {
     std::string c = base;
-    for (int n = 2; c != orig && (Exists(PrefPath(c)) || Exists(VmDir(c))); n++) c = base + " " + std::to_string(n);
+    for (int n = 1; c != orig && (Exists(PrefPath(c)) || Exists(VmDir(c))); n++) c = base + "_" + std::to_string(n);
     return c;
 }
 
@@ -411,10 +430,11 @@ int RmRf(const std::string& p) {
 
 // ---- editor state ---------------------------------------------------------------------------------------------------------------
 
-enum class View { List, Edit, Browse } g_view = View::List;
+enum class View { List, Edit, Browse, Catalog } g_view = View::List;
 int g_tab = 0;
 Settings g_ed;                 // the VM being created / edited
 char g_ed_name[64] = "";
+bool g_ed_orig_ga = false;       // Guest Additions setting the VM had when the editor opened
 std::string g_ed_orig;         // name the VM had when the editor opened; empty for a new VM
 std::string g_ed_prev_rom;     // the ROM copy it had then (replaced when another ROM is picked)
 std::string g_ed_hashed;       // ROM path the screen size was last derived from
@@ -429,6 +449,16 @@ const char* BoardFor(int w, int h) {
     return h >= 360 ? "devemu_wqvga" : "devemu";
 }
 
+// New VM on a tablet-shaped screen (phones are 1.78 and longer): a landscape guest (Jornada, SIMpad, CE 800x480) gets 270 degrees,
+// no soft buttons and no camera offset; a portrait guest gets the plain defaults. Existing VMs are left alone.
+void TabletDefaults() {
+    if (!g_ed_orig.empty() || std::max(g_dispW, g_dispH) >= 1.7f * std::min(g_dispW, g_dispH)) return;
+    const bool land = g_ed.fixed_w > g_ed.orig_h;
+    g_ed.rot = land ? 3 : 0;
+    g_ed.softkeys = !land;
+    g_ed.top_px = land ? 0 : Settings().top_px;
+}
+
 // Picks a ROM: its hash tells which board and screen size it wants (unknown images get QVGA 240x320).
 void SetRom(const std::string& path) {
     snprintf(g_ed.rom, sizeof g_ed.rom, "%s", path.c_str());
@@ -438,10 +468,13 @@ void SetRom(const std::string& path) {
     g_ed_label = k ? k->label : "";
     g_ed.fixed_w = k ? k->w : 240;  // unknown image: the most generic Windows Mobile screen, QVGA
     g_ed.orig_h = k ? k->h : 320;
+    const bool real = k && strncmp(k->board, "devemu", 6) != 0;  // a real handheld: Guest Additions work there too, so any resolution and fill-screen are fine
     g_ed.fixed_h = k && k->exact ? k->h : 0;
     if (k && k->exact) { g_ed.fill = false; g_ed.keep_w = true; }  // safe defaults for an image that wants its native size; the user may change them
     snprintf(g_ed.board, sizeof g_ed.board, "%s", k ? k->board : "devemu");
+    if (real) g_ed.ga = false;  // Guest Additions are off by default; they also work on the real handhelds (any resolution, fill-screen)
     g_ed.dpi = 0;
+    TabletDefaults();
     if (!g_ed_touched) snprintf(g_ed_name, sizeof g_ed_name, "%s", CleanName(Stem(path)).c_str());
 }
 
@@ -467,7 +500,7 @@ void OpenEditor(int idx) {  // -1: a new VM
     g_ed_label.clear();
     if (idx < 0) {
         g_ed = Settings();
-        g_ed.ga = true;  // shared folder and network on by default for a new VM
+        g_ed.ga = false;  // shared folder and network (Guest Additions) are opt-in
         g_ed.fixed_w = 240; g_ed.orig_h = 320;
         snprintf(g_ed.board, sizeof g_ed.board, "devemu");
         snprintf(g_ed_name, sizeof g_ed_name, "Generic VM");
@@ -477,6 +510,7 @@ void OpenEditor(int idx) {  // -1: a new VM
         g_ed_touched = false;
     } else {
         g_ed = g_vms[idx].s;
+        g_ed_orig_ga = g_ed.ga;
         FitToDevice(g_ed);  // saved with the VM when the editor is left
         snprintf(g_ed_name, sizeof g_ed_name, "%s", g_vms[idx].name.c_str());
         g_ed_orig = g_vms[idx].name;
@@ -503,6 +537,19 @@ bool DoSave(Settings s, const std::string& name, const std::string& orig, std::s
     if (!rom.empty() && rom.compare(0, dir.size() + 1, dir + "/") != 0) {  // a ROM from outside: keep our own copy
         const std::string dst = dir + "/" + Base(rom);
         if (!CopyFile(rom, dst)) { *err = "Не удалось скопировать ROM"; return false; }
+        const std::string src_dir = rom.substr(0, rom.rfind('/'));
+        if (DIR* d = opendir(src_dir.c_str())) {  // the serial-config EEPROM next to the ROM (Jornada 720) belongs to the image
+            while (dirent* e = readdir(d)) {
+                const std::string n = e->d_name;
+                if (n.find("eeprom") != std::string::npos && n.size() > 4 && n.compare(n.size() - 4, 4, ".bin") == 0 && !CopyFile(src_dir + "/" + n, dir + "/" + n)) {
+                    closedir(d);
+                    *err = "Не удалось скопировать EEPROM";
+                    return false;
+                }
+            }
+            closedir(d);
+        }
+        if (src_dir.compare(0, strlen(kStageDir) + 1, std::string(kStageDir) + "/") == 0) RmRf(src_dir);  // a downloaded image: the VM has its copy now
         if (!prev_rom.empty() && prev_rom != dst) unlink(prev_rom.c_str());
         DiscardStatesIn(dir);  // the saved machine belongs to the old image
         snprintf(s.rom, sizeof s.rom, "%s", dst.c_str());
@@ -662,6 +709,102 @@ void DrawBrowser(float w, float h) {
     ImGui::End();
 }
 
+// ---- ROM catalog (downloads from the cerf-bundles repository) -------------------------------------------------------------------
+
+int g_cat_group = -1;  // -1: the list of device types, else the index into kGroups
+int g_cat_pick = -1;   // the catalog row being downloaded; names the new VM
+
+// Full-screen list of known images: tap one to download it, unpack it next to the others and pick it in the editor.
+void DrawCatalog(float w, float h) {
+    ImGui::SetNextWindowPos({0, 0});
+    ImGui::SetNextWindowSize({w, h});
+    ImGui::Begin("##catalog", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    const float fs = ES();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {fs * 1.0f, fs * 0.6f});
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {fs * 0.5f, fs * 0.6f});
+    const char* title = g_cat_group < 0 ? "Скачать ROM" : kGroups[g_cat_group];
+    ImGui::SetCursorPos({(w - ImGui::CalcTextSize(title).x) * 0.5f, fs * 0.8f});
+    ImGui::TextUnformatted(title);
+    const cewm::romdl::State st = cewm::romdl::Get();
+    if (st.phase == 2) {  // downloaded: hand the image to the editor
+        cewm::romdl::Reset();
+        SetRom(st.rom);
+        if (g_cat_pick >= 0 && !g_ed_touched) snprintf(g_ed_name, sizeof g_ed_name, "%s", CleanName((kCatalog[g_cat_pick].group ? std::string(kCatalog[g_cat_pick].device) + " " : std::string()) + kCatalog[g_cat_pick].system).c_str());
+        if (g_ed_label.empty() && !st.board.empty()) {  // an image the hash table does not know: the manifest says which board it is for
+            struct B { const char* id; int w, h; bool real; };
+            static const B kBoards[] = {{"devemu", 240, 320, 0}, {"devemu_vga", 480, 640, 0}, {"devemu_wqvga", 240, 400, 0}, {"devemu_wvga", 480, 800, 0},
+                                        {"simpad_sl4", 800, 600, 1}, {"ipaq_h31xx", 240, 320, 1}, {"ipaq_h36xx", 240, 320, 1}, {"ipaq_h3660_h3670", 240, 320, 1}, {"jornada_720", 640, 240, 1}};
+            for (const B& b : kBoards) {
+                if (st.board != b.id) continue;
+                snprintf(g_ed.board, sizeof g_ed.board, "%s", b.id);
+                g_ed.fixed_w = b.w;
+                g_ed.orig_h = b.h;
+                if (b.real) { g_ed.fixed_h = b.h; g_ed.fill = false; g_ed.keep_w = true; g_ed.ga = false; }
+                g_ed_label = st.label;
+                TabletDefaults();
+            }
+        }
+        g_view = View::Edit;
+    }
+    const float btn_h = fs * 2.6f, y_btn = h - btn_h - fs * 1.5f;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::BeginChild("##items", {0, y_btn - ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y - (st.phase ? fs * 3.2f : 0)}, false);
+    ImGui::BeginDisabled(st.phase == 1);
+    const float ww = ImGui::GetContentRegionAvail().x - fs;  // text wraps here, so a long name always shows in full
+    const int n_items = (int)(sizeof kCatalog / sizeof *kCatalog), n_groups = (int)(sizeof kGroups / sizeof *kGroups);
+    const int n_rows = g_cat_group < 0 ? n_groups : n_items;
+    for (int i = 0; i < n_rows; i++) {
+        char l1[96], l2[200];
+        if (g_cat_group < 0) {  // device types
+            int n = 0;
+            for (const CatalogItem& c : kCatalog) n += c.group == i;
+            snprintf(l1, sizeof l1, "%s", kGroups[i]);
+            snprintf(l2, sizeof l2, "Образов: %d", n);
+        } else {
+            if (kCatalog[i].group != g_cat_group) continue;
+            snprintf(l1, sizeof l1, "%s", kCatalog[i].device);
+            snprintf(l2, sizeof l2, "%s  (%d МБ)", kCatalog[i].system, kCatalog[i].mb);
+        }
+        const float h1 = ImGui::CalcTextSize(l1, nullptr, false, ww).y, h2 = ImGui::CalcTextSize(l2, nullptr, false, ww).y;
+        ImGui::PushID(i);
+        const bool hit = Tap(ImGui::Selectable("##item", false, 0, {0, h1 + h2 + fs * 0.8f}));
+        const ImVec2 a = ImGui::GetItemRectMin();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {a.x + fs * 0.5f, a.y + fs * 0.25f}, ImGui::GetColorU32(ImGuiCol_Text), l1, nullptr, ww);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {a.x + fs * 0.5f, a.y + fs * 0.35f + h1}, ImGui::GetColorU32(ImGuiCol_TextDisabled), l2, nullptr, ww);
+        if (hit && g_cat_group < 0) { g_cat_group = i; ImGui::SetScrollY(0); ImGui::PopID(); break; }
+        else if (hit) { g_cat_pick = i; cewm::romdl::Start(kCatalog[i].id, kStageDir); }
+        ImGui::PopID();
+    }
+    ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("Образы берутся из каталога cerf-bundles.dz3n.net и скачиваются во временную папку и копируются в машину при сохранении. Права на образы принадлежат их владельцам.");
+    ImGui::PopTextWrapPos();
+    SwipeScroll();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    if (st.phase == 1) {  // below the list
+        ImGui::TextUnformatted(st.text.c_str());
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.28f, 1));
+        ImGui::ProgressBar(st.pct / 100.0f, {-1, fs * 0.8f}, "");
+        ImGui::PopStyleColor();
+    } else if (st.phase == 3) {
+        ImGui::TextColored({0.9f, 0.4f, 0.3f, 1}, "Ошибка: %s", st.text.c_str());
+    }
+    ImGui::SetCursorPosY(y_btn);
+    ImGui::BeginDisabled(st.phase == 1);
+    if (ImGui::Button("Назад", {-1, btn_h})) {
+        cewm::romdl::Reset();
+        if (g_cat_group >= 0) g_cat_group = -1;  // back to the device types first
+        else g_view = View::Edit;
+    }
+    ImGui::EndDisabled();
+    ImGui::PopStyleVar(2);
+    ImGui::End();
+}
+
 void RunVm(int i) {
     if (FitToDevice(g_vms[i].s)) WritePref(PrefPath(g_vms[i].name), g_vms[i].s);
     g_s = g_vms[i].s;
@@ -701,7 +844,7 @@ void DrawVmList() {
         ImGui::SetCursorPosY((a.y - bh - text_h) / 2);
         CenteredWrapped("Виртуальных машин пока нет.\n \nСкачайте образ Windows Mobile или Windows CE "
                         "(файл .bin или .nb0, например из установщика Microsoft Device Emulator в формате .msi), "
-                        "нажмите \"Создать ВМ\" и выберите его.", a.x * 0.9f);
+                        "нажмите \"Создать ВМ\" и выберите его, или загрузите из онлайн-каталога.", a.x * 0.9f);
         ImGui::SetCursorPos({(a.x - bw) / 2, (a.y - bh) / 2 + text_h / 2});
         if (Tap(ImGui::Button("Создать ВМ", {bw, bh}))) OpenEditor(-1);
         return;
@@ -741,7 +884,7 @@ void DrawAbout() {
         "CE/WM - эмулятор Windows Mobile и Windows CE для ОС Аврора.\n\n"
         "Автор: Павел Бибиченко (@erhoof)\n"
         "Telegram: t.me/erhoof\n"
-        "Версия 1.0\n\n"
+        "Версия 1.2\n\n"
         "Основа: CERF / libCerfEngine (MIT), dynarmic, libslirp, Dear ImGui (MIT) и SDL2 (zlib).\n\n"
         "Спасибо @sashikknox за шаблон интерфейса на ImGui.\n\n"
         "Образы ROM в комплект не входят, используйте свои. Виртуальные машины лежат в Documents/CEWM.");
@@ -755,7 +898,7 @@ bool Dropdown(const char* id, const char* preview) {
     ImGui::PopStyleVar();
     return open;
 }
-bool DropItem(const char* label, bool sel) {
+bool DropItem(const char* label, bool sel, const char* tag = nullptr) {  // tag: a green note after the label
     const float row = ImGui::GetTextLineHeight() * 1.15f;  // a little taller than the text, like the highlighted row of a padded popup
     // BeginCombo pads the popup by FramePadding.x, and Selectable's highlight spills half an ItemSpacing past its box: undo both.
     const float sp = ImGui::GetStyle().ItemSpacing.x;
@@ -763,6 +906,7 @@ bool DropItem(const char* label, bool sel) {
     const bool r = ImGui::Selectable((std::string("##") + label).c_str(), sel, 0, {ImGui::GetWindowWidth() - sp, row});
     const ImVec2 a = ImGui::GetItemRectMin();
     ImGui::GetWindowDrawList()->AddText({a.x + ES() * 0.8f, a.y + (row - ImGui::GetTextLineHeight()) * 0.5f}, ImGui::GetColorU32(ImGuiCol_Text), label);
+    if (tag) ImGui::GetWindowDrawList()->AddText({a.x + ES() * 0.8f + ImGui::CalcTextSize(label).x + ES() * 0.4f, a.y + (row - ImGui::GetTextLineHeight()) * 0.5f}, IM_COL32(90, 210, 110, 255), tag);
     return r;
 }
 
@@ -781,6 +925,7 @@ void DrawEditGeneral() {
     ImGui::Dummy({0, fs * 0.3f});
     ImGui::TextUnformatted("Образ ROM");
     if (Tap(ImGui::Button(g_ed.rom[0] ? Base(g_ed.rom).c_str() : "Выбрать ROM...", {-1, 0}))) OpenBrowser();
+    if (Tap(ImGui::Button("Скачать ROM...", {-1, 0}))) g_view = View::Catalog;
     const std::string path = g_ed.rom;
     const bool ok = IsFile(path);
     if (!path.empty()) Hint(path.c_str());
@@ -791,14 +936,54 @@ void DrawEditGeneral() {
     ImGui::Dummy({0, fs * 0.3f});
     ImGui::TextUnformatted("Модель устройства");
     ImGui::SetNextItemWidth(-1);
-    if (Dropdown("##model", "Windows Mobile / CE (Device Emulator)")) {
-        DropItem("Windows Mobile / CE (Device Emulator)", true);
+    struct Model { const char* board; const char* label; int w, h; };  // w x h: the fixed screen of a real device (0: set by the ROM)
+    static const Model kModels[] = {
+        {"devemu", "Windows Mobile / CE (Device Emulator)", 0, 0},
+        {"simpad_sl4", "Siemens SIMpad SL4", 800, 600},
+        {"ipaq_h31xx", "Compaq iPAQ H3100", 240, 320},
+        {"ipaq_h36xx", "Compaq iPAQ H3600", 240, 320},
+        {"ipaq_h3660_h3670", "Compaq iPAQ H3660/H3670", 240, 320},
+        {"jornada_720", "HP Jornada 720", 640, 240},
+    };
+    const bool de = strncmp(g_ed.board, "devemu", 6) == 0;
+    const char* cur = kModels[0].label;
+    for (const Model& m : kModels)
+        if (!de && !strcmp(m.board, g_ed.board)) cur = m.label;
+    ImGui::SetNextItemWidth(-1);
+    if (Dropdown("##model", cur)) {
+        for (const Model& m : kModels) {
+            const bool sel = m.label == cur;
+            if (!DropItem(m.label, sel, m.w ? nullptr : "Рекомендуется") || sel) continue;
+            if (m.w) {  // a real device: its own board and screen, Guest Additions off, native size
+                snprintf(g_ed.board, sizeof g_ed.board, "%s", m.board);
+                g_ed.fixed_w = m.w;
+                g_ed.orig_h = m.h;
+                g_ed.fixed_h = m.h;
+                g_ed.fill = false;
+                g_ed.keep_w = true;
+                g_ed.ga = false;
+                g_ed_label.clear();
+                TabletDefaults();
+            } else if (g_ed.rom[0]) {
+                SetRom(g_ed.rom);  // back to the board the ROM asks for
+            } else {
+                snprintf(g_ed.board, sizeof g_ed.board, "devemu");
+            }
+        }
         ImGui::EndCombo();
     }
 }
 
 void DrawEditFeatures() {
+    const bool was_ga = g_ed.ga;
     ImGui::Checkbox("Гостевые дополнения (сеть, общая папка)", &g_ed.ga);
+    if (strncmp(g_ed.board, "devemu", 6) != 0) {  // a real handheld: with the additions any resolution and fill-screen work, without them the LCD size is fixed
+        if (g_ed.ga != was_ga) {
+            g_ed.fixed_h = g_ed.ga ? 0 : g_ed.orig_h;
+            if (!g_ed.ga) g_ed.fill = false;
+        }
+    }
+    if (!g_ed_orig.empty() && g_ed.ga != g_ed_orig_ga) Hint("Смена гостевых дополнений требует новой загрузки: сохранённое состояние нельзя перенести. Оно останется для прежнего значения.");
     if (g_ed.ga) Hint(("Общая папка: Documents/CEWM/" + UniqueName(CleanName(g_ed_name), g_ed_orig) + "/Storage").c_str());
     ImGui::BeginDisabled(!g_ed.ga);
     ImGui::Checkbox("Веб-прокси (https)", &g_ed.proxy);
@@ -1252,8 +1437,8 @@ void DrawEmu(float W, float H) {
     if (g_booting || !g_guest.have_frame || resizing) {
         // Centred in the picture: title, the resolution note if any, an empty line, then the elapsed time.
         char t[24];
-        snprintf(t, sizeof t, "%us", (SDL_GetTicks() - g_start_ticks) / 1000);
-        std::vector<const char*> lines = {g_booting ? "Запуск..." : g_guest.have_frame ? "Запуск..." : "Загрузка Windows Mobile..."};
+        snprintf(t, sizeof t, "%uс", (SDL_GetTicks() - g_start_ticks) / 1000);
+        std::vector<const char*> lines = {g_booting ? "Запуск..." : g_guest.have_frame ? "Запуск..." : "Загрузка Windows..."};
         if (resizing) lines.push_back("Смена разрешения займет некоторое время");
         lines.push_back("");
         lines.push_back(t);
@@ -1272,10 +1457,14 @@ void DrawEmu(float W, float H) {
 
     if (Soft()) {
         // HTC HD2 order. Windows virtual keys of the devemu keyboard: F3 (Call), RWIN (Home, untested), LWIN (Start), ESC (Back), F4 (End).
-        enum Icon { Call, Home, Start, Back, End };
+        enum Icon { Call, Home, Start, Back, End, Esc, Enter };
         struct Key { const char* label; uint8_t vk; Icon icon; } keys[] = {
             {"Call", 0x72, Call}, {"Home", 0x5C, Home}, {"Start", 0x5B, Start}, {"Back", 0x1B, Back}, {"End", 0x73, End}};
-        constexpr int kN = 5;
+        int kN = 5;
+        if (!strcmp(g_s.board, "jornada_720") || !strcmp(g_s.board, "simpad_sl4")) {  // devices with no phone keys: Start, Esc and Enter (the calibration screen needs them)
+            keys[0] = {"Start", 0x5B, Start}; keys[1] = {"Esc", 0x1B, Esc}; keys[2] = {"Enter", 0x0D, Enter};
+            kN = 3;
+        }
         const float bw = (aw - (kN - 1) * kBtnGap) / kN;
         static int held = -1;
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1296,13 +1485,22 @@ void DrawEmu(float W, float H) {
             case Start: {  // Windows flag traced from the app icon: four rounded, wavy panes (red, green, blue, yellow)
                 const ImU32 cols[4] = {IM_COL32(240, 90, 40, a), IM_COL32(120, 190, 50, a), IM_COL32(50, 150, 230, a), IM_COL32(250, 200, 40, a)};
                 const float w = r * 1.2f;
+                // The fan triangles are drawn without anti-aliasing (AA fringes on every triangle showed as noise); the outline smooths the pane edge.
+                const ImDrawListFlags fl = dl->Flags;
+                dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
                 for (int k = 0; k < 4; k++) {
                     const ImVec2 o = {c.x + kFlagC[k][0] * w, c.y + kFlagC[k][1] * w};
+                    ImVec2 ring[kFlagN];
                     for (int m = 0; m < kFlagN; m++) {
                         const float* p0 = kFlag[k][m]; const float* p1 = kFlag[k][(m + 1) % kFlagN];
-                        dl->AddTriangleFilled(o, {c.x + p0[0] * w, c.y + p0[1] * w}, {c.x + p1[0] * w, c.y + p1[1] * w}, cols[k]);
+                        ring[m] = {c.x + p0[0] * w, c.y + p0[1] * w};
+                        dl->AddTriangleFilled(o, ring[m], {c.x + p1[0] * w, c.y + p1[1] * w}, cols[k]);
                     }
+                    dl->Flags = fl;
+                    dl->AddPolyline(ring, kFlagN, cols[k], ImDrawFlags_Closed, 1.f);
+                    dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
                 }
+                dl->Flags = fl;
                 break;
             }
             case Home:  // house: roof triangle over a body with a door gap
@@ -1310,6 +1508,13 @@ void DrawEmu(float W, float H) {
                 dl->AddRectFilled({c.x - r * 0.75f, c.y - r * 0.1f}, {c.x + r * 0.75f, c.y + r * 0.9f}, white);
                 dl->AddRectFilled({c.x - r * 0.2f, c.y + r * 0.35f}, {c.x + r * 0.2f, c.y + r * 0.9f}, IM_COL32(0, 0, 0, 255));
                 break;
+            case Esc: case Enter: {
+                const char* tx = keys[i].icon == Esc ? "Esc" : "Enter";
+                const float fsz = r * 1.3f;
+                const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fsz, FLT_MAX, 0.f, tx);
+                dl->AddText(ImGui::GetFont(), fsz, {c.x - ts.x / 2, c.y - ts.y / 2}, white, tx);
+                break;
+            }
             case Back:  // left arrow
                 dl->AddLine({c.x + r, c.y}, {c.x - r, c.y}, white, t);
                 dl->AddLine({c.x - r, c.y}, {c.x - r * 0.1f, c.y - r * 0.9f}, white, t);
@@ -1344,7 +1549,7 @@ void DrawEmu(float W, float H) {
 //   --create ROM | --run NAME   create a VM from a ROM file / start a VM straight away (tests)
 //   --hires   with --shot-ui on the laptop: write the full 1080x2400 picture instead of the 360x800 window
 //   --board B | --fixed-h N | --ga | --rot DEG   board variant, exact guest height, Guest Additions for a --rom run
-struct Cli { bool hires = false; bool autostart = false; const char* shot = nullptr; const char* uishot = nullptr; int shot_after = 0; bool open_new = false; const char* open_edit = nullptr; int tab = -1; const char* create = nullptr; const char* run = nullptr; const char* rename = nullptr; const char* setrom = nullptr; const char* browse = nullptr; int click_x = -1, click_y = -1; std::vector<std::pair<int, int>> clicks; } g_cli;
+struct Cli { bool hires = false; bool autostart = false; const char* shot = nullptr; const char* uishot = nullptr; int shot_after = 0; bool open_new = false; const char* open_edit = nullptr; int tab = -1; const char* create = nullptr; const char* run = nullptr; const char* rename = nullptr; const char* setrom = nullptr; const char* browse = nullptr; int catalog = -2; int click_x = -1, click_y = -1; std::vector<std::pair<int, int>> clicks; } g_cli;
 
 void ParseCli(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
@@ -1359,6 +1564,14 @@ void ParseCli(int argc, char** argv) {
         else if (a == "--softkeys") g_s.softkeys = true;
         else if (a == "--no-softkeys") g_s.softkeys = false;
         else if (a == "--board") snprintf(g_s.board, sizeof g_s.board, "%s", val());
+        else if (a == "--win") {
+#ifndef CEWM_ON_PHONE
+            int ww = 0, wh = 0;
+            if (sscanf(val(), "%dx%d", &ww, &wh) == 2 && ww >= 200 && wh >= 200) { kVirtW = ww * kVirtScale; kVirtH = wh * kVirtScale; g_win_forced = true; }
+#else
+            (void)val();
+#endif
+        }
         else if (a == "--fixed-h") g_s.fixed_h = std::clamp(atoi(val()), 0, 1020);
         else if (a == "--ga") g_s.ga = true;
         else if (a == "--rot") g_s.rot = std::clamp(atoi(val()) / 90, 0, 3);
@@ -1367,6 +1580,7 @@ void ParseCli(int argc, char** argv) {
         else if (a == "--tab") g_cli.tab = atoi(val());
         else if (a == "--hires") g_cli.hires = true;
         else if (a == "--browse") g_cli.browse = val();
+        else if (a == "--catalog") g_cli.catalog = atoi(val());  // test hook: open the download catalog, -1 = the device types, n = that type
         else if (a == "--click") sscanf(val(), "%d,%d", &g_cli.click_x, &g_cli.click_y);
         else if (a == "--clicks") {  // "x,y;x,y;..." taps in order, 20 frames apart
             for (std::string all = val(); !all.empty();) {
@@ -1407,6 +1621,10 @@ int main(int argc, char** argv) {
         snprintf(lp, sizeof lp, "%s/cewm.log", ConfDir().c_str());
         if (freopen(lp, "w", stderr)) setvbuf(stderr, nullptr, _IONBF, 0);
     }
+    {  // debug switch for a device without a terminal: an empty file "debug" next to the settings adds the guest PC (every 2 s) to cewm.log
+        const std::string dbg = ConfDir() + "/debug";
+        if (access(dbg.c_str(), F_OK) == 0) setenv("CEWM_PCLOG", "2000", 0);
+    }
     SDL_Init(SDL_INIT_VIDEO);
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) fprintf(stderr, "audio unavailable: %s\n", SDL_GetError());  // the guest runs silent without it
     cewm::StartDeviceStats();
@@ -1422,6 +1640,7 @@ int main(int argc, char** argv) {
     SDL_Window* win = SDL_CreateWindow("CE/WM", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, kVirtW / kVirtScale,
                                        kVirtH / kVirtScale, SDL_WINDOW_OPENGL);
 #endif
+    g_win = win;
     if (!win) { SDL_Log("window: %s", SDL_GetError()); return 1; }
     SDL_GLContext gl = SDL_GL_CreateContext(win);
     if (!gl) { SDL_Log("GL context: %s", SDL_GetError()); return 1; }
@@ -1471,6 +1690,7 @@ int main(int argc, char** argv) {
         g_view = View::List;
         ScanVms();
     }
+    if (g_cli.catalog > -2) { OpenEditor(-1); g_cat_group = g_cli.catalog; g_view = View::Catalog; }
     if (g_cli.browse) { OpenEditor(-1); g_bdir = g_cli.browse; ReadBrowseDir(); g_view = View::Browse; }  // test hook
     if (g_cli.tab >= 0) g_tab = g_ed_tab = g_cli.tab;
     io.FontGlobalScale = 0.75f;  // the whole UI font runs at 3/4 of the physical-size default
@@ -1570,6 +1790,7 @@ int main(int argc, char** argv) {
         }
         const Mode before = g_mode;
         if (g_mode == Mode::Launcher && g_view == View::Browse) DrawBrowser(io.DisplaySize.x, io.DisplaySize.y);
+        else if (g_mode == Mode::Launcher && g_view == View::Catalog) DrawCatalog(io.DisplaySize.x, io.DisplaySize.y);
         else if (g_mode == Mode::Launcher) DrawLauncher(io.DisplaySize.x, io.DisplaySize.y);
         else DrawEmu(io.DisplaySize.x, io.DisplaySize.y);
         ImGui::Render();

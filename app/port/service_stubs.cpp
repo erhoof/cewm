@@ -46,3 +46,10 @@ std::unique_ptr<PcmciaCard> PcmciaCardCatalog::Create(const std::string& id, con
     }
     return card;
 }
+
+// HostGdiPlus: Windows GDI+ drawing helper; only the board LED widgets call it, and this port draws no LED widgets.
+#include "host/host_gdiplus.h"
+REGISTER_SERVICE(HostGdiPlus);
+HostGdiPlus::~HostGdiPlus() {}
+void HostGdiPlus::OnReady() {}
+void HostGdiPlus::FillCircleAA(HDC, int, int, int, COLORREF, COLORREF) {}

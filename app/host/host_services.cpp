@@ -6,6 +6,11 @@
 #include "core/cerf_emulator.h"
 #include "core/log.h"
 #include "host/guest_deep_sleep.h"
+#include "boot/guest_cold_boot.h"
+#include "execution/engine_bridge.h"
+#include <cerfengine/guest_engine.h>
+#include <chrono>
+#include <thread>
 #include "host/guest_power_notifier.h"
 #include "host/host_widget_registry.h"
 #include "host/host_window.h"
@@ -44,16 +49,16 @@ void GuestPowerNotifier::NotifyReboot() { Banner("guest reboot"); }
 void GuestPowerNotifier::NotifyResume(ResumeSource) { Banner("guest resumed"); }
 void GuestPowerNotifier::NotifyHardReset() { Banner("hard reset"); }
 
-// ---- GuestDeepSleep: no prompt; deep sleep just parks the guest (shortcut: no wake support) ----
+// ---- GuestDeepSleep: no prompt; a guest suspend wakes itself at once (a reset-on-wake SoC resumes through its saved vector) ----
 REGISTER_SERVICE(GuestDeepSleep);
-void GuestDeepSleep::RegisterWaker(DeepSleepWaker*) {}
-void GuestDeepSleep::RegisterClockStopWaker(DeepSleepClockStop*) {}
-void GuestDeepSleep::RegisterPowerOnWake() {}
-void GuestDeepSleep::RegisterPowerUpListener(std::function<void()>) {}
-void GuestDeepSleep::ClearWakeCause() {}
-void GuestDeepSleep::RegisterResumeVectorProvider(SleepResumeVectorProvider*) {}
-void GuestDeepSleep::RegisterUserWakeInput(std::function<void()>) {}
-void GuestDeepSleep::RegisterSleepEntryListener(std::function<void()>) {}
+void GuestDeepSleep::RegisterWaker(DeepSleepWaker* waker) { waker_ = waker; }
+void GuestDeepSleep::RegisterClockStopWaker(DeepSleepClockStop* waker) { clock_stop_ = waker; }
+void GuestDeepSleep::RegisterPowerOnWake() { power_on_wake_ = true; }
+void GuestDeepSleep::RegisterPowerUpListener(std::function<void()> fn) { power_up_listeners_.push_back(std::move(fn)); }
+void GuestDeepSleep::ClearWakeCause() { if (waker_) waker_->ClearSleepWakeCause(); }
+void GuestDeepSleep::RegisterResumeVectorProvider(SleepResumeVectorProvider* p) { resume_vector_provider_ = p; }
+void GuestDeepSleep::RegisterUserWakeInput(std::function<void()> fn) { user_wake_inputs_.push_back(std::move(fn)); }
+void GuestDeepSleep::RegisterSleepEntryListener(std::function<void()> fn) { sleep_entry_listeners_.push_back(std::move(fn)); }
 void GuestDeepSleep::RegisterParkClock(std::function<void()>) {}
 void GuestDeepSleep::RegisterParkWakeSource(std::function<bool()>) {}
 void GuestDeepSleep::RegisterParkWakeDue(std::function<int64_t()>) {}
@@ -62,11 +67,47 @@ void GuestDeepSleep::FinishPark() {}
 int64_t GuestDeepSleep::SleptNs() const { return 0; }
 int64_t GuestDeepSleep::ParkWaitNs() const { return 0; }
 void GuestDeepSleep::Enter() {
-    LOG(Cerf, "guest entered deep sleep (no wake support)\n");
+    if (emu_.Get<EngineBridge>().Guest().ResetPending() || active_.exchange(true)) return;
+    LOG(Cerf, "guest entered deep sleep: waking it at once\n");
+    wake_claimed_.store(false, std::memory_order_release);
+    emu_.Get<GuestPowerNotifier>().NotifyPowerDown();
+    emu_.Get<EngineBridge>().Guest().EnterDeepSleep();
+    for (auto& fn : sleep_entry_listeners_) fn();
     asleep_.store(true, std::memory_order_release);
+    std::thread([this] {  // off the JIT thread, after it has parked
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        DeliverWake(ResumeSource::User);
+        active_.store(false);
+    }).detach();
 }
 void GuestDeepSleep::ObserveAsleep(bool asleep) { asleep_.store(asleep, std::memory_order_release); }
-void GuestDeepSleep::OnFullRestore() {}
+void GuestDeepSleep::ConsumeSleepSpan() {}
+void GuestDeepSleep::DeliverWake(ResumeSource src) {  // the same three wake shapes as cerf/host/guest_deep_sleep.cpp
+    if (wake_claimed_.exchange(true, std::memory_order_acq_rel)) return;
+    if (src == ResumeSource::User)
+        for (auto& fn : user_wake_inputs_) fn();
+    if (clock_stop_) {
+        clock_stop_->OnPowerUp();
+        for (auto& fn : power_up_listeners_) fn();
+        emu_.Get<GuestPowerNotifier>().NotifyResume(src);
+        emu_.Get<EngineBridge>().Guest().ExitDeepSleep();
+        return;
+    }
+    if (power_on_wake_) {
+        emu_.Get<GuestPowerNotifier>().NotifyResume(src);
+        emu_.Get<GuestColdBoot>().RequestHardReset();
+        return;
+    }
+    if (!waker_) return;
+    waker_->LatchSleepWakeCause();
+    if (resume_vector_provider_) resume_vector_provider_->ApplyPendingResume();
+    emu_.Get<EngineBridge>().Guest().SetResetPending(true);
+    emu_.Get<GuestPowerNotifier>().NotifyResume(src);
+}
+void GuestDeepSleep::OnFullRestore() {
+    wake_claimed_.store(false, std::memory_order_release);
+    if (emu_.Get<EngineBridge>().Guest().DeepSleep()) DeliverWake(ResumeSource::User);
+}
 
 // ---- HostWidgetRegistry: no widgets ----
 REGISTER_SERVICE(HostWidgetRegistry);

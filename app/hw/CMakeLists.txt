@@ -9,7 +9,7 @@ endforeach()
 add_library(cerfhw STATIC ${HW_SRC}
   ../port/emulated_memory.cpp ../port/virtual_clock.cpp ../port/guest_cycle_clock.cpp ../port/log.cpp
   ../port/paced_wave_out_sdl.cpp ../port/ga_stubs.cpp ../port/slirp_backend.cpp ../port/slirp_icmp_posix.cpp ../port/folder_share_posix.cpp ../port/cerf_virt_framebuffer.cpp ../port/state_stream.cpp ../port/hibernation.cpp ../port/state_boot_gate.cpp
-  ../port/storage_posix.cpp ../port/host_file_bytes.cpp ../port/service_stubs.cpp ../port/s3c2410_adc_touch_input.cpp ../port/s3c2410_iis.cpp ../port/arm_engine_bridge.cpp ../port/trace_manager.cpp ../host/host_services.cpp ../host/emu_runner.cpp ../host/http_proxy.cpp)
+  ../port/storage_posix.cpp ../port/host_file_bytes.cpp ../port/service_stubs.cpp ../port/s3c2410_adc_touch_input.cpp ../port/s3c2410_iis.cpp ../port/guest_clock_touch_input.cpp ../port/compaq_ipaq_h3000_audio_player.cpp ../port/p_sa1111_sac.cpp ../port/p_sa1111_sac_dma.cpp ../port/p_sa1111_sac_rx_dma.cpp ../port/sa1111_sac_host_input.cpp ../port/sa1111_sac_host_output.cpp ../port/sa11xx_dma_audio_player.cpp ../port/siemens_simpad_audio_player.cpp ../port/arm_engine_bridge.cpp ../port/trace_manager.cpp ../host/host_services.cpp ../host/emu_runner.cpp ../host/http_proxy.cpp ../host/rom_download.cpp)
 target_include_directories(cerfhw PUBLIC ${CERF} ${CMAKE_CURRENT_SOURCE_DIR}/../engine/shim ${CMAKE_CURRENT_SOURCE_DIR}/../host)
 target_compile_definitions(cerfhw PUBLIC CERF_DEV_MODE=0)
 target_compile_options(cerfhw PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/../engine/shim/cerf_compat.h)

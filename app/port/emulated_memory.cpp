@@ -471,14 +471,15 @@ void EmulatedMemory::SaveRegions(StateWriter& w, bool flash) {
         const std::vector<uint64_t>* base = nullptr;
         if (flash) {
             auto it = g_flash_base.find(r.base);
-            if (it == g_flash_base.end()) { LOG(Caution, "EmulatedMemory: no flash baseline for 0x%08X\n", r.base); CerfFatalExit(CERF_FATAL_RUNTIME_ERROR); }
-            base = &it->second;
+            // A flash region mapped after the baseline was taken (SA-1110 boards): no reference, so every page is kept.
+            if (it != g_flash_base.end()) base = &it->second;
+            else LOG(Caution, "EmulatedMemory: no flash baseline for 0x%08X, saving all %u KB\n", r.base, r.size >> 10);
         }
         const uint32_t pages = r.size / kPage;
         std::vector<uint32_t> keep;
         for (uint32_t pg = 0; pg < pages; ++pg) {
             const uint8_t* p = host + size_t(pg) * kPage;
-            if (flash ? PageHash(p) != (*base)[pg] : !PageZero(p)) keep.push_back(pg);
+            if (flash ? (!base || PageHash(p) != (*base)[pg]) : !PageZero(p)) keep.push_back(pg);
         }
         LOG(Cerf, "[HIBERNATE] %s region 0x%08X: %zu of %u pages kept\n", flash ? "flash" : "RAM", r.base, keep.size(), pages);
         w.Write<uint32_t>("pages", static_cast<uint32_t>(keep.size()));
