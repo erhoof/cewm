@@ -9,6 +9,8 @@
 #include "samsung_smdk2410_family_id.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
 
@@ -50,6 +52,7 @@ uint8_t SamsungSmdk2410Battery::ReadByte(uint32_t addr) {
     switch (off) {
         case kRegIsOnBattery:
             value = battery_.IsOnBattery() ? 1u : 0u;
+            if (const char* o = getenv("CEWM_ONBATT")) value = static_cast<uint8_t>(atoi(o));  // CEWM: test hook, raw register value
             name  = "IsOnBattery";
             break;
         case kRegChargePercent:
@@ -59,6 +62,7 @@ uint8_t SamsungSmdk2410Battery::ReadByte(uint32_t addr) {
         default:
             HaltUnsupportedAccess("ReadByte", addr, 0);  /* noreturn */
     }
+    if (getenv("CEWM_BATLOG")) { static int n; if (n++ < 60) fprintf(stderr, "[BATLOG] read8 %s -> %u\n", name, value); }  // CEWM: what the ROM driver samples
     LOG(Periph, "[Battery] read8 %s -> 0x%02X\n", name, value);
     return value;
 }
@@ -66,7 +70,9 @@ uint8_t SamsungSmdk2410Battery::ReadByte(uint32_t addr) {
 uint16_t SamsungSmdk2410Battery::ReadHalf(uint32_t addr) {
     const uint32_t off = addr - kBase;
     if (off != kRegTemperature) HaltUnsupportedAccess("ReadHalf", addr, 0);  /* noreturn */
+    if (getenv("CEWM_BATLOG")) { static int n; if (n++ < 10) fprintf(stderr, "[BATLOG] read16 temperature\n"); }
     LOG(Periph, "[Battery] read16 Temperature -> 0x%04X\n", temperature_);
+    if (const char* t = getenv("CEWM_BATTEMP")) return static_cast<uint16_t>(atoi(t));  // CEWM: test hook
     return temperature_;
 }
 

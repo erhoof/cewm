@@ -72,6 +72,7 @@ public:
         total_seen_ = now.total;
         park_seen_  = now.park;
         cal_.SeedFromHost();
+        if (getenv("CEWM_FIXEDCLOCK")) { cal_.sec = cal_.min = cal_.hour = 0; cal_.date = 1; cal_.mon = 1; cal_.year = 26; cal_.day = 4; }
         GuestCycleClock& clk = emu_.Get<GuestCycleClock>();
         tick_ev_  = clk.Add([this] { OnTick(); });
         alarm_ev_ = clk.Add([this] { OnAlarmCompare(); });
@@ -313,6 +314,7 @@ uint32_t S3C2410Rtc::ReadWord(uint32_t addr) {
     }
 
     Advance();
+    if (!getenv("CEWM_FIXEDCLOCK")) cal_.SeedFromHost();  // CEWM: guest time always follows the host (CEWM_FIXEDCLOCK: keep the boot-time seed, for reproducible runs)
     switch (off) {
         case kOffBcdSec:  return Cal::ToBcd(cal_.sec);
         case kOffBcdMin:  return Cal::ToBcd(cal_.min);
@@ -392,11 +394,7 @@ void S3C2410Rtc::WriteWord(uint32_t addr, uint32_t value) {
         case kOffBcdDay: case kOffBcdMon: case kOffBcdYear:
             /* S3C2410A UM p.17-3: bit 0 of RTCCON must be set high in order to
                write the BCD register in the RTC block. */
-            if ((rtccon_ & kRtcConRtcEn) != 0u) {
-                SetField(off, value);
-                RearmAlarm();
-            }
-            return;
+            return;  // CEWM: guest time sets are ignored, the host owns the clock
         default:
             HaltUnsupportedAccess("WriteWord", addr, value);
     }

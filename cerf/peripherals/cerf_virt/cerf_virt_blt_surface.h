@@ -111,7 +111,7 @@ inline uint8_t* BltSurfaceAccess::PixelPtr(const Surface& s, int32_t x, int32_t 
         *run = s.bpp;
         return p;
     }
-    const uint32_t off = (uint32_t)y * (uint32_t)s.desc->stride + (uint32_t)x * s.bpp;
+    const int32_t off = (int32_t)((uint32_t)y * (uint32_t)s.desc->stride + (uint32_t)x * s.bpp);  /* signed: a negative stride must not become a +4 GB offset on 64-bit hosts */
     uint8_t* p = s.host_base + off;
     if (p < s.host_lo || p + s.bpp > s.host_hi) return nullptr;
     const uint32_t avail = (uint32_t)(s.host_hi - p);
@@ -121,7 +121,7 @@ inline uint8_t* BltSurfaceAccess::PixelPtr(const Surface& s, int32_t x, int32_t 
 
 inline uint32_t BltSurfaceAccess::ReadStraddlePixel(const Surface& s, int32_t x,
                                                     int32_t y, uint32_t bpp) {
-    const uint32_t off = (uint32_t)y * (uint32_t)s.desc->stride + (uint32_t)x * bpp;
+    const int32_t off = (int32_t)((uint32_t)y * (uint32_t)s.desc->stride + (uint32_t)x * bpp);  /* signed: a negative stride must not become a +4 GB offset on 64-bit hosts */
     uint8_t* p = s.host_base + off;
     if (p < s.host_lo || p + bpp > s.host_hi) FatalStraddle(s, x, y, off);
     return BltPixelOps::ReadPixel(p, bpp);
@@ -130,7 +130,7 @@ inline uint32_t BltSurfaceAccess::ReadStraddlePixel(const Surface& s, int32_t x,
 inline void BltSurfaceAccess::WriteStraddlePixel(const Surface& s, int32_t x,
                                                  int32_t y, uint32_t bpp,
                                                  uint32_t value) {
-    const uint32_t off = (uint32_t)y * (uint32_t)s.desc->stride + (uint32_t)x * bpp;
+    const int32_t off = (int32_t)((uint32_t)y * (uint32_t)s.desc->stride + (uint32_t)x * bpp);  /* signed: a negative stride must not become a +4 GB offset on 64-bit hosts */
     uint8_t* p = s.host_base + off;
     if (p < s.host_lo || p + bpp > s.host_hi) FatalStraddle(s, x, y, off);
     BltPixelOps::WritePixel(p, bpp, value);
