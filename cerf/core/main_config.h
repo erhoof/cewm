@@ -12,6 +12,7 @@ struct CerfConfig {
 
 inline constexpr char kArgBoardId[]        = "--board-id=";
 inline constexpr char kArgRomPrimary[]     = "--rom-primary=";
+inline constexpr char kArgRomEeprom[]      = "--rom-eeprom=";
 inline constexpr char kArgScreenWidth[]    = "--screen-width=";
 inline constexpr char kArgScreenHeight[]   = "--screen-height=";
 inline constexpr char kArgScreenDpi[]      = "--screen-dpi=";

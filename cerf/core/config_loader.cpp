@@ -405,6 +405,8 @@ void ConfigLoader::LoadInto(DeviceConfig& config) {
             config.board_id = a + sizeof(kArgBoardId) - 1;
         } else if (strncmp(a, kArgRomPrimary, sizeof(kArgRomPrimary) - 1) == 0) {
             config.rom_primary = a + sizeof(kArgRomPrimary) - 1;
+        } else if (strncmp(a, kArgRomEeprom, sizeof(kArgRomEeprom) - 1) == 0) {
+            config.rom_eeprom = a + sizeof(kArgRomEeprom) - 1;
         } else if (strcmp(a, kArgGuestAdditions) == 0) {
             config.guest_additions = true;
         } else if (strncmp(a, kArgGaColorScheme, sizeof(kArgGaColorScheme) - 1) == 0) {
