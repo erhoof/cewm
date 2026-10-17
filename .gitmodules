@@ -1,0 +1,6 @@
+[submodule "cerf"]
+	path = cerf
+	url = https://github.com/gweslab/cerf
+[submodule "dynarmic"]
+	path = dynarmic
+	url = https://github.com/azahar-emu/dynarmic
