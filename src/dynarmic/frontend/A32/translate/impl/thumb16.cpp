@@ -952,6 +952,7 @@ bool TranslatorVisitor::thumb16_BLX_reg(Reg m) {
 
 // SVC #<imm8>
 bool TranslatorVisitor::thumb16_SVC(Imm<8> imm8) {
+    return InterpretThisInstruction();  // cewm
     const u32 imm32 = imm8.ZeroExtend();
     ir.PushRSB(ir.current_location.AdvancePC(2).AdvanceIT());
     ir.UpdateUpperLocationDescriptor();

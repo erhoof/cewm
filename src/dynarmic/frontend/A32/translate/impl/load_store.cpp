@@ -93,7 +93,7 @@ bool TranslatorVisitor::arm_LDR_imm(Cond cond, bool P, bool U, bool W, Reg n, Re
         return UnpredictableInstruction();
     }
 
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if ((!P || W) && n == t) {
         return UnpredictableInstruction();
     }
@@ -126,7 +126,7 @@ bool TranslatorVisitor::arm_LDR_imm(Cond cond, bool P, bool U, bool W, Reg n, Re
 // LDR <Rt>, [<Rn>, #+/-<Rm>]{!}
 // LDR <Rt>, [<Rn>], #+/-<Rm>
 bool TranslatorVisitor::arm_LDR_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m) {
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if (m == Reg::PC) {
         return UnpredictableInstruction();
     }
@@ -180,7 +180,7 @@ bool TranslatorVisitor::arm_LDRB_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if ((!P || W) && n == t) {
         return UnpredictableInstruction();
     }
@@ -205,7 +205,7 @@ bool TranslatorVisitor::arm_LDRB_imm(Cond cond, bool P, bool U, bool W, Reg n, R
 // LDRB <Rt>, [<Rn>, #+/-<Rm>]{!}
 // LDRB <Rt>, [<Rn>], #+/-<Rm>
 bool TranslatorVisitor::arm_LDRB_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m) {
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if (t == Reg::PC || m == Reg::PC) {
         return UnpredictableInstruction();
     }
@@ -348,7 +348,7 @@ bool TranslatorVisitor::arm_LDRD_reg(Cond cond, bool P, bool U, bool W, Reg n, R
 
 // LDRH <Rt>, [PC, #-/+<imm>]
 bool TranslatorVisitor::arm_LDRH_lit(Cond cond, bool P, bool U, bool W, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if (P == W) {
         return UnpredictableInstruction();
     }
@@ -378,7 +378,7 @@ bool TranslatorVisitor::arm_LDRH_imm(Cond cond, bool P, bool U, bool W, Reg n, R
         return UnpredictableInstruction();
     }
 
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if ((!P || W) && n == t) {
         return UnpredictableInstruction();
     }
@@ -403,7 +403,7 @@ bool TranslatorVisitor::arm_LDRH_imm(Cond cond, bool P, bool U, bool W, Reg n, R
 // LDRH <Rt>, [<Rn>, #+/-<Rm>]{!}
 // LDRH <Rt>, [<Rn>], #+/-<Rm>
 bool TranslatorVisitor::arm_LDRH_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Reg m) {
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if (t == Reg::PC || m == Reg::PC) {
         return UnpredictableInstruction();
     }
@@ -452,7 +452,7 @@ bool TranslatorVisitor::arm_LDRSB_imm(Cond cond, bool P, bool U, bool W, Reg n, 
         return UnpredictableInstruction();
     }
 
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if ((!P || W) && n == t) {
         return UnpredictableInstruction();
     }
@@ -477,7 +477,7 @@ bool TranslatorVisitor::arm_LDRSB_imm(Cond cond, bool P, bool U, bool W, Reg n, 
 // LDRSB <Rt>, [<Rn>, #+/-<Rm>]{!}
 // LDRSB <Rt>, [<Rn>], #+/-<Rm>
 bool TranslatorVisitor::arm_LDRSB_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Reg m) {
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if (t == Reg::PC || m == Reg::PC) {
         return UnpredictableInstruction();
     }
@@ -525,7 +525,7 @@ bool TranslatorVisitor::arm_LDRSH_imm(Cond cond, bool P, bool U, bool W, Reg n, 
         return UnpredictableInstruction();
     }
 
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if ((!P || W) && n == t) {
         return UnpredictableInstruction();
     }
@@ -550,7 +550,7 @@ bool TranslatorVisitor::arm_LDRSH_imm(Cond cond, bool P, bool U, bool W, Reg n, 
 // LDRSH <Rt>, [<Rn>, #+/-<Rm>]{!}
 // LDRSH <Rt>, [<Rn>], #+/-<Rm>
 bool TranslatorVisitor::arm_LDRSH_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Reg m) {
-    ASSERT_MSG(!(!P && W), "T form of instruction unimplemented");
+    if (!P && W) return InterpretThisInstruction();  // cewm: unprivileged (T) forms
     if (t == Reg::PC || m == Reg::PC) {
         return UnpredictableInstruction();
     }
@@ -584,7 +584,7 @@ bool TranslatorVisitor::arm_STR_imm(Cond cond, bool P, bool U, bool W, Reg n, Re
 
     const auto offset = ir.Imm32(imm12.ZeroExtend());
     const auto address = GetAddress(ir, P, U, W, n, offset);
-    ir.WriteMemory32(address, ir.GetRegister(t), IR::AccType::NORMAL);
+    ir.WriteMemory32(address, (t == Reg::PC ? IR::U32(ir.Imm32(ir.PC() + g_pc_store_extra)) : ir.GetRegister(t)), IR::AccType::NORMAL);
     return true;
 }
 
@@ -605,7 +605,7 @@ bool TranslatorVisitor::arm_STR_reg(Cond cond, bool P, bool U, bool W, Reg n, Re
 
     const auto offset = EmitImmShift(ir.GetRegister(m), shift, imm5, ir.GetCFlag()).result;
     const auto address = GetAddress(ir, P, U, W, n, offset);
-    ir.WriteMemory32(address, ir.GetRegister(t), IR::AccType::NORMAL);
+    ir.WriteMemory32(address, (t == Reg::PC ? IR::U32(ir.Imm32(ir.PC() + g_pc_store_extra)) : ir.GetRegister(t)), IR::AccType::NORMAL);
     return true;
 }
 
@@ -885,7 +885,7 @@ static bool STMHelper(A32::IREmitter& ir, bool W, Reg n, RegList list, IR::U32 s
         ir.SetRegister(n, writeback_address);
     }
     if (mcl::bit::get_bit<15>(list)) {
-        ir.WriteMemory32(address, ir.Imm32(ir.PC()), IR::AccType::ATOMIC);
+        ir.WriteMemory32(address, ir.Imm32(ir.PC() + g_pc_store_extra), IR::AccType::ATOMIC);
     }
     return true;
 }

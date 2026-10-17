@@ -12,6 +12,12 @@
 #include <oaknut/code_block.hpp>
 #include <oaknut/oaknut.hpp>
 #include <tsl/robin_map.h>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <vector>
+
 #include <tsl/robin_set.h>
 
 #include "dynarmic/backend/arm64/emit_arm64.h"
@@ -39,6 +45,10 @@ public:
 
     CodePtr GetOrEmit(IR::LocationDescriptor descriptor);
 
+    // cewm: blocks emitted on a worker thread (see address_space.cpp). Until one is ready a stub runs it through InterpreterFallback.
+    bool async_emit = false;
+    void PollAsync();
+
     void InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& descriptors);
 
     void ClearCache();
@@ -48,6 +58,13 @@ public:
 protected:
     virtual EmitConfig GetEmitConfig() = 0;
     virtual void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) = 0;
+    // Async emit hooks (A32 implements them).
+    virtual void RegisterNewBlockRange(IR::LocationDescriptor, IR::LocationDescriptor) {}
+    virtual IR::Block MakeInterpretStub(IR::LocationDescriptor, IR::LocationDescriptor) const;
+    virtual size_t InstructionCount(IR::LocationDescriptor, IR::LocationDescriptor) const { return 1; }
+    virtual void NotePending(IR::LocationDescriptor, IR::LocationDescriptor) {}
+    void CancelPending(const tsl::robin_set<IR::LocationDescriptor>& descriptors);
+    void CancelAllPending();
 
     void ProtectCodeMemory() {
 #if defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT) || defined(__APPLE__) || defined(__OpenBSD__)
@@ -82,6 +99,16 @@ protected:
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;
+
+    // Async emit state. pending/next_id are only touched by the executing thread; results come back through async_done.
+    struct AsyncDone;
+    tsl::robin_map<IR::LocationDescriptor, u64> pending;
+    u64 next_id = 0;
+    std::mutex async_mutex;
+    std::vector<AsyncDone> async_done;
+    std::atomic<int> async_done_count{0};
+    std::atomic<int> async_outstanding{0};
+    friend class AsyncEmitter;
 
     struct PreludeInfo {
         std::ptrdiff_t end_of_prelude;
@@ -125,6 +152,7 @@ protected:
 
         void* call_svc;
         void* exception_raised;
+        void* interpreter_fallback = nullptr;  // A32 only (CERF fork: Term::Interpret)
         void* dc_raised;
         void* ic_raised;
         void* isb_raised;

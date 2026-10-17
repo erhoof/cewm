@@ -31,6 +31,7 @@ bool TranslatorVisitor::arm_MRS(Cond cond, Reg d) {
 
 // MSR<c> <spec_reg>, #<const>
 bool TranslatorVisitor::arm_MSR_imm(Cond cond, unsigned mask, int rotate, Imm<8> imm8) {
+    if (mask & 0b0011) return InterpretThisInstruction();  // cewm: control/extension fields change the processor mode
     ASSERT_MSG(mask != 0, "Decode error");
 
     if (!ArmConditionPassed(cond)) {
@@ -63,6 +64,7 @@ bool TranslatorVisitor::arm_MSR_imm(Cond cond, unsigned mask, int rotate, Imm<8>
 
 // MSR<c> <spec_reg>, <Rn>
 bool TranslatorVisitor::arm_MSR_reg(Cond cond, unsigned mask, Reg n) {
+    if (mask & 0b0011) return InterpretThisInstruction();  // cewm
     if (mask == 0) {
         return UnpredictableInstruction();
     }

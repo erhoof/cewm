@@ -33,8 +33,25 @@ oaknut::Label EmitA32Cond(oaknut::CodeGenerator& code, EmitContext&, IR::Cond co
 
 void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::Terminal terminal, IR::LocationDescriptor initial_location, bool is_single_step);
 
-void EmitA32Terminal(oaknut::CodeGenerator&, EmitContext&, IR::Term::Interpret, IR::LocationDescriptor, bool) {
-    ASSERT_FALSE("Interpret should never be emitted.");
+void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::Interpret terminal, IR::LocationDescriptor, bool) {
+    // CERF fork: one instruction is run by the host interpreter (privileged/CP15/SWI...); then back to the dispatcher.
+    const u32 pc = A32::LocationDescriptor{terminal.next}.PC();
+    code.MOV(Wscratch0, pc);
+    code.STR(Wscratch0, Xstate, offsetof(A32JitState, regs) + sizeof(u32) * 15);
+    if (ctx.conf.enable_cycle_counting) {
+        code.LDR(X1, SP, offsetof(StackLayout, cycles_to_run));
+        code.SUB(X1, X1, Xticks);
+        EmitRelocation(code, ctx, LinkTarget::AddTicks);
+    }
+    code.MOV(W1, pc);
+    code.MOV(W2, static_cast<u32>(terminal.num_instructions));
+    EmitRelocation(code, ctx, LinkTarget::InterpreterFallback);
+    if (ctx.conf.enable_cycle_counting) {
+        EmitRelocation(code, ctx, LinkTarget::GetTicksRemaining);
+        code.STR(X0, SP, offsetof(StackLayout, cycles_to_run));
+        code.MOV(Xticks, X0);
+    }
+    EmitRelocation(code, ctx, LinkTarget::ReturnFromRunCode);
 }
 
 void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::ReturnToDispatch, IR::LocationDescriptor, bool) {
@@ -170,8 +187,8 @@ void EmitA32CheckMemoryAbort(oaknut::CodeGenerator& code, EmitContext& ctx, IR::
 
     const A32::LocationDescriptor current_location{IR::LocationDescriptor{inst->GetArg(0).GetU64()}};
 
-    code.LDAR(Xscratch0, Xhalt);
-    code.TST(Xscratch0, static_cast<u32>(HaltReason::MemoryAbort));
+    code.LDAR(Wscratch0, Xhalt);  // cewm: halt_reason is a u32 (a 64-bit LDAR on it can be misaligned -> SIGBUS)
+    code.TST(Wscratch0, static_cast<u32>(HaltReason::MemoryAbort));
     code.B(EQ, end);
     EmitSetUpperLocationDescriptor(code, ctx, current_location, ctx.block.Location());
     code.MOV(Wscratch0, current_location.PC());

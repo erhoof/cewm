@@ -9,6 +9,7 @@ namespace Dynarmic::A32 {
 
 // CDP{2} <coproc_no>, #<opc1>, <CRd>, <CRn>, <CRm>, #<opc2>
 bool TranslatorVisitor::arm_CDP(Cond cond, size_t opc1, CoprocReg CRn, CoprocReg CRd, size_t coproc_no, size_t opc2, CoprocReg CRm) {
+    return InterpretThisInstruction();  // cewm: cp15 etc. live in our interpreter
     if ((coproc_no & 0b1110) == 0b1010) {
         return arm_UDF();
     }
@@ -25,6 +26,7 @@ bool TranslatorVisitor::arm_CDP(Cond cond, size_t opc1, CoprocReg CRn, CoprocReg
 // LDC{2}{L}<c> <coproc_no>, <CRd>, [<Rn>], #+/-<imm32>
 // LDC{2}{L}<c> <coproc_no>, <CRd>, [<Rn>], <imm8>
 bool TranslatorVisitor::arm_LDC(Cond cond, bool p, bool u, bool d, bool w, Reg n, CoprocReg CRd, size_t coproc_no, Imm<8> imm8) {
+    return InterpretThisInstruction();  // cewm: cp15 etc. live in our interpreter
     if (!p && !u && !d && !w) {
         return arm_UDF();
     }
@@ -54,6 +56,16 @@ bool TranslatorVisitor::arm_LDC(Cond cond, bool p, bool u, bool d, bool w, Reg n
 
 // MCR{2}<c> <coproc_no>, #<opc1>, <Rt>, <CRn>, <CRm>, #<opc2>
 bool TranslatorVisitor::arm_MCR(Cond cond, size_t opc1, CoprocReg CRn, Reg t, size_t coproc_no, size_t opc2, CoprocReg CRm) {
+    // cewm: ARM9 D-cache clean/invalidate and write-buffer drain (cp15 c7, CRm = c6/c10/c14) do nothing in the emulator and the kernel
+    // runs them in tight loops, so skip the interpreter round trip. I-cache ops (c5) still go to the interpreter (they flush blocks).
+    if (coproc_no == 15 && opc1 == 0 && CRn == CoprocReg::C7 && cond != Cond::NV
+        && (CRm == CoprocReg::C6 || CRm == CoprocReg::C10 || CRm == CoprocReg::C14)) {
+        return true;
+    }
+    // cewm: invalidate I-cache line by MVA -> host callback (see DynCore::Cp15); everything else on cp15 stays in the interpreter
+    if (!(coproc_no == 15 && opc1 == 0 && CRn == CoprocReg::C7 && CRm == CoprocReg::C5 && opc2 == 1 && cond != Cond::NV && t != Reg::PC)) {
+        return InterpretThisInstruction();
+    }
     if ((coproc_no & 0b1110) == 0b1010) {
         return arm_UDF();
     }
@@ -72,6 +84,7 @@ bool TranslatorVisitor::arm_MCR(Cond cond, size_t opc1, CoprocReg CRn, Reg t, si
 
 // MCRR{2}<c> <coproc_no>, #<opc>, <Rt>, <Rt2>, <CRm>
 bool TranslatorVisitor::arm_MCRR(Cond cond, Reg t2, Reg t, size_t coproc_no, size_t opc, CoprocReg CRm) {
+    return InterpretThisInstruction();  // cewm: cp15 etc. live in our interpreter
     if ((coproc_no & 0b1110) == 0b1010) {
         return arm_UDF();
     }
@@ -90,6 +103,7 @@ bool TranslatorVisitor::arm_MCRR(Cond cond, Reg t2, Reg t, size_t coproc_no, siz
 
 // MRC{2}<c> <coproc_no>, #<opc1>, <Rt>, <CRn>, <CRm>, #<opc2>
 bool TranslatorVisitor::arm_MRC(Cond cond, size_t opc1, CoprocReg CRn, Reg t, size_t coproc_no, size_t opc2, CoprocReg CRm) {
+    return InterpretThisInstruction();  // cewm: cp15 etc. live in our interpreter
     if ((coproc_no & 0b1110) == 0b1010) {
         return arm_UDF();
     }
@@ -110,6 +124,7 @@ bool TranslatorVisitor::arm_MRC(Cond cond, size_t opc1, CoprocReg CRn, Reg t, si
 
 // MRRC{2}<c> <coproc_no>, #<opc>, <Rt>, <Rt2>, <CRm>
 bool TranslatorVisitor::arm_MRRC(Cond cond, Reg t2, Reg t, size_t coproc_no, size_t opc, CoprocReg CRm) {
+    return InterpretThisInstruction();  // cewm: cp15 etc. live in our interpreter
     if ((coproc_no & 0b1110) == 0b1010) {
         return arm_UDF();
     }
@@ -132,6 +147,7 @@ bool TranslatorVisitor::arm_MRRC(Cond cond, Reg t2, Reg t, size_t coproc_no, siz
 // STC{2}{L}<c> <coproc>, <CRd>, [<Rn>], #+/-<imm32>
 // STC{2}{L}<c> <coproc>, <CRd>, [<Rn>], <imm8>
 bool TranslatorVisitor::arm_STC(Cond cond, bool p, bool u, bool d, bool w, Reg n, CoprocReg CRd, size_t coproc_no, Imm<8> imm8) {
+    return InterpretThisInstruction();  // cewm: cp15 etc. live in our interpreter
     if ((coproc_no & 0b1110) == 0b1010) {
         return arm_UDF();
     }

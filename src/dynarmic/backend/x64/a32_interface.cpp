@@ -288,6 +288,8 @@ void Jit::InvalidateCacheRange(std::uint32_t start_address, std::size_t length) 
     impl->InvalidateCacheRange(start_address, length);
 }
 
+void Jit::PollAsyncBlocks() {}
+
 void Jit::Reset() {
     impl->Reset();
 }

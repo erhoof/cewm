@@ -172,7 +172,7 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
     const A32::LocationDescriptor descriptor{block.Location()};
     const A32::LocationDescriptor end_location{block.EndLocation()};
 
-    const auto range = boost::icl::discrete_interval<u32>::closed(descriptor.PC(), end_location.PC() - 1);
+    const auto range = boost::icl::discrete_interval<u32>::closed(descriptor.PC(), std::max<u32>(descriptor.PC(), end_location.PC() - 1));  // cewm: a block with no instructions (tier stub) still needs a one-byte range so it can be invalidated
     block_ranges.AddRange(range, descriptor);
 
     return RegisterBlock(descriptor, entrypoint, size);

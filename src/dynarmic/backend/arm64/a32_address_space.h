@@ -27,9 +27,13 @@ protected:
     void EmitPrelude();
     EmitConfig GetEmitConfig() override;
     void RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo& block_info) override;
+    void RegisterNewBlockRange(IR::LocationDescriptor, IR::LocationDescriptor) override;
+    size_t InstructionCount(IR::LocationDescriptor, IR::LocationDescriptor) const override;
+    void NotePending(IR::LocationDescriptor, IR::LocationDescriptor) override;
 
     const A32::UserConfig conf;
     BlockRangeInformation<u32> block_ranges;
+    BlockRangeInformation<u32> pending_ranges;  // blocks still being emitted on the worker
 };
 
 }  // namespace Dynarmic::Backend::Arm64

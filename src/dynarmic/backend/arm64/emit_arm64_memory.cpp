@@ -138,6 +138,11 @@ void CallbackOnlyEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, I
     if (ordered) {
         code.DMB(oaknut::BarrierOp::ISH);
     }
+    {
+        oaknut::Label abort_end;
+        ctx.conf.emit_check_memory_abort(code, ctx, inst, abort_end);  // cewm: the callback-only path had no precise-abort exit
+        code.l(abort_end);
+    }
 
     if constexpr (bitsize == 128) {
         code.MOV(Q8.B16(), Q0.B16());
@@ -158,6 +163,11 @@ void CallbackOnlyEmitExclusiveReadMemory(oaknut::CodeGenerator& code, EmitContex
     EmitRelocation(code, ctx, ExclusiveReadMemoryLinkTarget(bitsize));
     if (ordered) {
         code.DMB(oaknut::BarrierOp::ISH);
+    }
+    {
+        oaknut::Label abort_end;
+        ctx.conf.emit_check_memory_abort(code, ctx, inst, abort_end);  // cewm: the callback-only path had no precise-abort exit
+        code.l(abort_end);
     }
 
     if constexpr (bitsize == 128) {
@@ -180,6 +190,10 @@ void CallbackOnlyEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, 
     EmitRelocation(code, ctx, WriteMemoryLinkTarget(bitsize));
     if (ordered) {
         code.DMB(oaknut::BarrierOp::ISH);
+    }    {
+        oaknut::Label abort_end;
+        ctx.conf.emit_check_memory_abort(code, ctx, inst, abort_end);  // cewm: the callback-only path had no precise-abort exit
+        code.l(abort_end);
     }
 }
 

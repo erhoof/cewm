@@ -60,6 +60,8 @@ struct Jit::Impl final {
         return hr;
     }
 
+    void PollAsync() { current_address_space.PollAsync(); }
+
     void ClearCache() {
         std::unique_lock lock{invalidation_mutex};
         invalidate_entire_cache = true;
@@ -182,6 +184,10 @@ void Jit::ClearCache() {
 
 void Jit::InvalidateCacheRange(std::uint32_t start_address, std::size_t length) {
     impl->InvalidateCacheRange(start_address, length);
+}
+
+void Jit::PollAsyncBlocks() {
+    impl->PollAsync();
 }
 
 void Jit::Reset() {

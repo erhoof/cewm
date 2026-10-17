@@ -4,6 +4,9 @@
  */
 
 #include <cstdio>
+#include <cstring>
+#include <deque>
+#include <optional>
 
 #include <mcl/bit_cast.hpp>
 
@@ -33,7 +36,147 @@ AddressSpace::AddressSpace(size_t code_cache_size)
     });
 }
 
-AddressSpace::~AddressSpace() = default;
+// ---- cewm: async emit ------------------------------------------------------------------------------------------------------------
+// The executing thread translates a block to IR (the frontend reads guest memory and must stay on this thread), then hands the IR to a
+// worker that runs EmitArm64 into a private buffer (it only uses relative branches inside the block; everything outside the block goes
+// through relocations that Link() patches after the copy). Meanwhile a stub block that interprets the instructions is installed. PollAsync()
+// swaps the stub for the finished block: unlink stub, copy code into the cache, Link, relink callers.
+struct AddressSpace::AsyncDone {
+    u64 id = 0;
+    IR::LocationDescriptor descriptor{0}, end{0};
+    EmittedBlockInfo ebi;
+    std::vector<u32> code;
+};
+
+class AsyncEmitter {
+public:
+    struct Request {
+        AddressSpace* owner;
+        u64 id;
+        IR::LocationDescriptor descriptor, end;
+        IR::Block block;
+        EmitConfig conf;
+    };
+
+    static AsyncEmitter& Get() {
+        static AsyncEmitter* instance = new AsyncEmitter;  // process lifetime: the worker thread is never joined
+        return *instance;
+    }
+
+    void Submit(Request&& r) {
+        {
+            std::lock_guard lock{m};
+            queue.push_back(std::move(r));
+        }
+        cv.notify_one();
+    }
+
+private:
+    AsyncEmitter() : fastmem_manager(eh), worker([this] { Loop(); }) {}
+
+    void Loop() {
+        std::vector<u32> buffer(1u << 18);  // 1 MiB: far larger than any block
+        for (;;) {
+            std::optional<Request> popped;
+            {
+                std::unique_lock lock{m};
+                cv.wait(lock, [this] { return !queue.empty(); });
+                popped.emplace(std::move(queue.front()));
+                queue.pop_front();
+            }
+            Request& r = *popped;
+            oaknut::CodeGenerator code{buffer.data(), buffer.data()};
+            AddressSpace::AsyncDone done;
+            done.id = r.id;
+            done.descriptor = r.descriptor;
+            done.end = r.end;
+            done.ebi = EmitArm64(code, std::move(r.block), r.conf, fastmem_manager);
+            done.code.assign(buffer.data(), buffer.data() + done.ebi.size / sizeof(u32));
+            {
+                std::lock_guard lock{r.owner->async_mutex};
+                r.owner->async_done.push_back(std::move(done));
+                r.owner->async_done_count.fetch_add(1);
+            }
+            r.owner->async_outstanding.fetch_sub(1);
+        }
+    }
+
+    std::mutex m;
+    std::condition_variable cv;
+    std::deque<Request> queue;
+    ExceptionHandler eh;
+    FastmemManager fastmem_manager;
+    std::thread worker;
+};
+
+IR::Block AddressSpace::MakeInterpretStub(IR::LocationDescriptor descriptor, IR::LocationDescriptor end) const {
+    IR::Block stub{descriptor};
+    stub.SetEndLocation(end);
+    IR::Term::Interpret term{descriptor};
+    term.num_instructions = InstructionCount(descriptor, end);
+    stub.SetTerminal(term);
+    return stub;
+}
+
+void AddressSpace::CancelPending(const tsl::robin_set<IR::LocationDescriptor>& descriptors) {
+    for (const auto& d : descriptors) {
+        pending.erase(d);
+    }
+}
+
+void AddressSpace::CancelAllPending() {
+    pending.clear();
+}
+
+void AddressSpace::PollAsync() {
+    if (async_done_count.load(std::memory_order_relaxed) == 0) {
+        return;
+    }
+    std::vector<AsyncDone> ready;
+    {
+        std::lock_guard lock{async_mutex};
+        ready.swap(async_done);
+        async_done_count.store(0);
+    }
+    for (AsyncDone& r : ready) {
+        const auto it = pending.find(r.descriptor);
+        if (it == pending.end() || it->second != r.id) {
+            continue;  // invalidated or superseded while it was being emitted
+        }
+        pending.erase(it);
+        const size_t bytes = (r.code.size() * sizeof(u32) + 15) & ~size_t{15};
+        if (GetRemainingSize() < 1024 * 1024 + bytes) {
+            ClearCache();  // also drops every pending request; they get requested again
+            return;
+        }
+
+        InvalidateBasicBlocks({r.descriptor});  // unlink and forget the interpreter stub
+
+        UnprotectCodeMemory();
+        code.set_offset((code.offset() + 15) & ~std::ptrdiff_t{15});
+        const CodePtr entry = code.xptr<CodePtr>();
+        std::memcpy(entry, r.code.data(), r.code.size() * sizeof(u32));
+        code.set_xptr(reinterpret_cast<u32*>(entry + r.code.size() * sizeof(u32)));
+        r.ebi.entry_point = entry;
+
+        ASSERT(block_entries.insert({r.descriptor, entry}).second);
+        ASSERT(reverse_block_entries.insert({entry, r.descriptor}).second);
+        ASSERT(block_infos.insert({entry, r.ebi}).second);
+
+        Link(r.ebi);
+        RelinkForDescriptor(r.descriptor, entry);
+        mem.invalidate(reinterpret_cast<u32*>(entry), r.ebi.size);
+        ProtectCodeMemory();
+
+        RegisterNewBlockRange(r.descriptor, r.end);
+    }
+}
+
+AddressSpace::~AddressSpace() {
+    while (async_outstanding.load() != 0) {
+        std::this_thread::yield();
+    }
+}
 
 CodePtr AddressSpace::Get(IR::LocationDescriptor descriptor) {
     if (const auto iter = block_entries.find(descriptor); iter != block_entries.end()) {
@@ -66,6 +209,19 @@ CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
     }
 
     IR::Block ir_block = GenerateIR(descriptor);
+
+    // Blocks that already end in Interpret (tier stubs) are tiny: emit them right here.
+    const IR::Terminal block_terminal = ir_block.GetTerminal();
+    if (async_emit && !boost::get<IR::Term::Interpret>(&block_terminal)) {
+        const IR::LocationDescriptor end = ir_block.EndLocation();
+        const u64 id = ++next_id;
+        pending[descriptor] = id;
+        NotePending(descriptor, end);
+        async_outstanding.fetch_add(1);
+        AsyncEmitter::Get().Submit({this, id, descriptor, end, std::move(ir_block), GetEmitConfig()});
+        return Emit(MakeInterpretStub(descriptor, end)).entry_point;
+    }
+
     const EmittedBlockInfo block_info = Emit(std::move(ir_block));
     return block_info.entry_point;
 }
@@ -90,6 +246,7 @@ void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescri
 }
 
 void AddressSpace::ClearCache() {
+    CancelAllPending();
     block_entries.clear();
     reverse_block_entries.clear();
     block_infos.clear();
@@ -238,6 +395,9 @@ void AddressSpace::Link(EmittedBlockInfo& block_info) {
             break;
         case LinkTarget::CallSVC:
             c.BL(prelude_info.call_svc);
+            break;
+        case LinkTarget::InterpreterFallback:
+            c.BL(prelude_info.interpreter_fallback);
             break;
         case LinkTarget::ExceptionRaised:
             c.BL(prelude_info.exception_raised);

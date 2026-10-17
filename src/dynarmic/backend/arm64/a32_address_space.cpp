@@ -158,6 +158,7 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
 A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
         : AddressSpace(conf.code_cache_size)
         , conf(conf) {
+    async_emit = conf.cewm_async_emit;
     EmitPrelude();
 }
 
@@ -166,7 +167,7 @@ IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
 
     Optimization::PolyfillPass(ir_block, {});
     Optimization::NamingPass(ir_block);
-    if (conf.HasOptimization(OptimizationFlag::GetSetElimination)) {
+    if (conf.HasOptimization(OptimizationFlag::GetSetElimination) && !conf.check_halt_on_memory_access) {  // cewm: delayed register stores are lost on a precise abort (same guard as the x64 backend)
         Optimization::A32GetSetElimination(ir_block, {.convert_nzc_to_nz = true});
         Optimization::DeadCodeElimination(ir_block);
     }
@@ -182,6 +183,9 @@ IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
 }
 
 void A32AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges) {
+    if (async_emit) {
+        CancelPending(pending_ranges.InvalidateRanges(ranges));
+    }
     InvalidateBasicBlocks(block_ranges.InvalidateRanges(ranges));
 }
 
@@ -215,6 +219,7 @@ void A32AddressSpace::EmitPrelude() {
     prelude_info.exclusive_write_memory_32 = EmitExclusiveWriteCallTrampoline<&A32::UserCallbacks::MemoryWriteExclusive32, u32>(code, conf);
     prelude_info.exclusive_write_memory_64 = EmitExclusiveWriteCallTrampoline<&A32::UserCallbacks::MemoryWriteExclusive64, u64>(code, conf);
     prelude_info.call_svc = EmitCallTrampoline<&A32::UserCallbacks::CallSVC>(code, conf.callbacks);
+    prelude_info.interpreter_fallback = EmitCallTrampoline<&A32::UserCallbacks::InterpreterFallback>(code, conf.callbacks);
     prelude_info.exception_raised = EmitCallTrampoline<&A32::UserCallbacks::ExceptionRaised>(code, conf.callbacks);
     prelude_info.isb_raised = EmitCallTrampoline<&A32::UserCallbacks::InstructionSynchronizationBarrierRaised>(code, conf.callbacks);
     prelude_info.add_ticks = EmitCallTrampoline<&A32::UserCallbacks::AddTicks>(code, conf.callbacks);
@@ -415,10 +420,26 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
 }
 
 void A32AddressSpace::RegisterNewBasicBlock(const IR::Block& block, const EmittedBlockInfo&) {
-    const A32::LocationDescriptor descriptor{block.Location()};
-    const A32::LocationDescriptor end_location{block.EndLocation()};
-    const auto range = boost::icl::discrete_interval<u32>::closed(descriptor.PC(), end_location.PC() - 1);
+    RegisterNewBlockRange(block.Location(), block.EndLocation());
+}
+
+void A32AddressSpace::RegisterNewBlockRange(IR::LocationDescriptor loc, IR::LocationDescriptor end) {
+    const A32::LocationDescriptor descriptor{loc};
+    const A32::LocationDescriptor end_location{end};
+    const auto range = boost::icl::discrete_interval<u32>::closed(descriptor.PC(), std::max<u32>(descriptor.PC(), end_location.PC() - 1));  // cewm: a block with no instructions (tier stub) still needs a one-byte range so it can be invalidated
     block_ranges.AddRange(range, descriptor);
+}
+
+size_t A32AddressSpace::InstructionCount(IR::LocationDescriptor loc, IR::LocationDescriptor end) const {
+    const A32::LocationDescriptor start{loc};
+    const u32 bytes = A32::LocationDescriptor{end}.PC() - start.PC();
+    return std::max<size_t>(1, bytes / (start.TFlag() ? 2 : 4));
+}
+
+void A32AddressSpace::NotePending(IR::LocationDescriptor loc, IR::LocationDescriptor end) {
+    const A32::LocationDescriptor descriptor{loc};
+    const A32::LocationDescriptor end_location{end};
+    pending_ranges.AddRange(boost::icl::discrete_interval<u32>::closed(descriptor.PC(), std::max<u32>(descriptor.PC(), end_location.PC() - 1)), descriptor);
 }
 
 }  // namespace Dynarmic::Backend::Arm64

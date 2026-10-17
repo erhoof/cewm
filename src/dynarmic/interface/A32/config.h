@@ -150,6 +150,9 @@ struct UserConfig {
     /// The prefered and tested mode for this library is with unsafe optimizations disabled.
     bool unsafe_optimizations = false;
 
+    /// cewm (arm64 backend only): emit translated blocks on a worker thread; until a block is ready it runs through InterpreterFallback.
+    bool cewm_async_emit = false;
+
     // Page Table
     // The page table is used for faster memory access. If an entry in the table is nullptr,
     // the JIT will fallback to calling the MemoryRead*/MemoryWrite* callbacks.

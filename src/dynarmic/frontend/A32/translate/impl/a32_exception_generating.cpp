@@ -24,6 +24,7 @@ bool TranslatorVisitor::arm_BKPT(Cond cond, Imm<12> /*imm12*/, Imm<4> /*imm4*/) 
 
 // SVC<c> #<imm24>
 bool TranslatorVisitor::arm_SVC(Cond cond, Imm<24> imm24) {
+    return InterpretThisInstruction();  // cewm: kernel entry is modelled by the interpreter
     if (!ArmConditionPassed(cond)) {
         return true;
     }

@@ -47,6 +47,9 @@ public:
      */
     void InvalidateCacheRange(std::uint32_t start_address, std::size_t length);
 
+    /// cewm: install blocks finished by the async emitter (arm64 backend; no-op elsewhere). Call from the executing thread, e.g. inside a callback.
+    void PollAsyncBlocks();
+
     /**
      * Reset CPU state to state at startup. Does not clear code cache.
      * Cannot be called from a callback.

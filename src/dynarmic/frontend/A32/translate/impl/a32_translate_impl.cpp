@@ -11,6 +11,8 @@
 
 namespace Dynarmic::A32 {
 
+u32 g_pc_store_extra = 0;
+
 bool TranslatorVisitor::ArmConditionPassed(Cond cond) {
     return IsConditionPassed(*this, cond);
 }
@@ -34,15 +36,18 @@ bool TranslatorVisitor::InterpretThisInstruction() {
 }
 
 bool TranslatorVisitor::UnpredictableInstruction() {
-    return RaiseException(Exception::UnpredictableInstruction);
+    // cewm: the guest OS is privileged; our interpreter decides whether this is really undefined.
+    return InterpretThisInstruction();
 }
 
 bool TranslatorVisitor::UndefinedInstruction() {
-    return RaiseException(Exception::UndefinedInstruction);
+    // cewm: the guest OS is privileged; our interpreter decides whether this is really undefined.
+    return InterpretThisInstruction();
 }
 
 bool TranslatorVisitor::DecodeError() {
-    return RaiseException(Exception::DecodeError);
+    // cewm: the guest OS is privileged; our interpreter decides whether this is really undefined.
+    return InterpretThisInstruction();
 }
 
 bool TranslatorVisitor::RaiseException(Exception exception) {

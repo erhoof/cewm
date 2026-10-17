@@ -18,6 +18,9 @@
 
 namespace Dynarmic::A32 {
 
+/// cewm: extra bytes added to the PC value that STR/STM store for R15 (CPU-model dependent; ARM920T: 12 - 8 = 4).
+extern u32 g_pc_store_extra;
+
 enum class Exception;
 
 struct TranslatorVisitor final {
