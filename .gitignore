@@ -1,0 +1,24 @@
+# ROM images (never publish)
+rom/
+ROMs/
+CE-ROMs/
+*.bin
+*.nb0
+*.img
+
+# working notes
+plan/
+
+# vendored libraries and build output
+third_party/
+app/third_party/
+app/build/
+app/RPMS/
+app/.sfdk/
+*.rpm
+
+# editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

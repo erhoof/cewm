@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+X-Nemo-Application-Type=no-invoker
+Icon=ru.erhoof.cewm
+Exec=ru.erhoof.cewm
+Categories=Utility
+Name=CE/WM
+
+[X-Application]
+Permissions=UserDirs;DeviceInfo;Internet;Audio;
+OrganizationName=ru.erhoof
+ApplicationName=cewm
+
+[X-Aurora-Application]
+Orientation=Portrait
