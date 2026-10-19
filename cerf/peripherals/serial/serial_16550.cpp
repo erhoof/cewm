@@ -285,6 +285,11 @@ void Serial16550::WriteReg8(uint32_t offset, uint8_t value) {
     if (line_changed && line_cfg_cb_) line_cfg_cb_(line_cfg);
 }
 
+size_t Serial16550::RxAvailable() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return RxAvailLocked();
+}
+
 bool Serial16550::RxEmpty() const {
     std::lock_guard<std::mutex> lk(mu_);
     return RxAvailLocked() == 0;

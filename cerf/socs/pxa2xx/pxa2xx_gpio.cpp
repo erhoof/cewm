@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 #include "pxa2xx_gpio.h"
 
 #include "pxa2xx_intc.h"
@@ -202,6 +204,7 @@ uint32_t Pxa2xxGpio::ReadWord(uint32_t addr) {
     case Reg::kGplr: {
         uint32_t v = PinLevelLocked(i);
         if (serial_slave_) v |= serial_slave_->DriveGplr(i);
+        if (getenv("CEWM_GPIO_TRACE")) { static uint32_t last[4] = {~0u,~0u,~0u,~0u}; if (i < 4 && last[i] != v) { last[i] = v; fprintf(stderr, "[GPIO] GPLR%u = %08x\n", i, v); } }
         return v;
     }
     case Reg::kGpdr: return gpdr_[i];
@@ -249,8 +252,8 @@ bool Pxa2xxGpio::ApplyWriteLocked(Reg reg, uint32_t i, uint32_t off, uint32_t va
     /* Table 24-33 (page 24-29) GPLR0 0x40E0_0000, "<31:9> R PL x": "This
        read-only field indicates the current value of each GPIO." */
     case Reg::kGplr: return false;
-    case Reg::kGrer: grer_[i] = value; return false;
-    case Reg::kGfer: gfer_[i] = value; return false;
+    case Reg::kGrer: if (getenv("CEWM_GPIO_TRACE")) fprintf(stderr, "[GPIO] GRER%u <- %08x\n", i, value); grer_[i] = value; return false;
+    case Reg::kGfer: if (getenv("CEWM_GPIO_TRACE")) fprintf(stderr, "[GPIO] GFER%u <- %08x\n", i, value); gfer_[i] = value; return false;
     /* Section 24.5.6 (page 24-30): "Once a GEDR bit is set by an edge event, the
        bit remains set until it is cleared by writing a one to the status bit.
        Writing a zero to a GEDR status bit has no effect." Table 24-37 (page

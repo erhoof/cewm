@@ -61,6 +61,7 @@ public:
 
     /* True once the guest has read every queued RX byte. */
     bool RxEmpty() const override;
+    size_t RxAvailable() const;   /* bytes still queued for the guest */
 
     /* Fired off-lock when a guest read empties the RX queue, so a flow-
        controlled feeder can push the next frame. */
