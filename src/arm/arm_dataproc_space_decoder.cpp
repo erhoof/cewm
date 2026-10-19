@@ -78,8 +78,8 @@ bool ArmDataprocSpaceDecoder::DecodeDataProcessingImm(DecodedInsn* insn,
                                                       ArmOpcode    op) {
     const uint32_t opcode = (op.word >> 21) & 0xFu;
     const uint32_t s      = (op.word >> 20) & 0x1u;
-    const uint32_t rn     = (op.word >> 16) & 0xFu;
-    const uint32_t rd     = (op.word >> 12) & 0xFu;
+    uint32_t       rn     = (op.word >> 16) & 0xFu;
+    uint32_t       rd     = (op.word >> 12) & 0xFu;
     const uint32_t rot2   = ((op.word >> 8) & 0xFu) * 2u;
     const uint32_t imm8   =  op.word        & 0xFFu;
     const uint32_t imm32  =
@@ -87,11 +87,12 @@ bool ArmDataprocSpaceDecoder::DecodeDataProcessingImm(DecodedInsn* insn,
 
     const bool is_test = opcode >= 8u && opcode <= 11u;
     const bool is_move = opcode == 13u || opcode == 15u;
-    if (is_move && rn != 0u) {
-        return false;
+    /* The XScale ignores the SBZ Rn of MOV/MVN and Rd of TST/TEQ/CMP/CMN; Esmertec's Jeode JIT emits such encodings. */
+    if (is_move) {
+        rn = 0u;
     }
-    if (is_test && rd != 0u) {
-        return false;
+    if (is_test) {
+        rd = 0u;
     }
 
     insn->op1       = opcode;
@@ -114,19 +115,20 @@ bool ArmDataprocSpaceDecoder::DecodeDataProcessingReg(DecodedInsn* insn,
                                                       ArmOpcode    op) {
     const uint32_t opcode = (op.word >> 21) & 0xFu;
     const uint32_t s      = (op.word >> 20) & 0x1u;
-    const uint32_t rn     = (op.word >> 16) & 0xFu;
-    const uint32_t rd     = (op.word >> 12) & 0xFu;
+    uint32_t       rn     = (op.word >> 16) & 0xFu;
+    uint32_t       rd     = (op.word >> 12) & 0xFu;
     const uint32_t imm5   = (op.word >>  7) & 0x1Fu;
     const uint32_t type   = (op.word >>  5) & 0x3u;
     const uint32_t rm     =  op.word        & 0xFu;
 
     const bool is_test = opcode >= 8u && opcode <= 11u;
     const bool is_move = opcode == 13u || opcode == 15u;
-    if (is_move && rn != 0u) {
-        return false;
+    /* The XScale ignores the SBZ Rn of MOV/MVN and Rd of TST/TEQ/CMP/CMN; Esmertec's Jeode JIT emits such encodings. */
+    if (is_move) {
+        rn = 0u;
     }
-    if (is_test && rd != 0u) {
-        return false;
+    if (is_test) {
+        rd = 0u;
     }
 
     uint32_t shift_t = 0u;
@@ -154,19 +156,20 @@ bool ArmDataprocSpaceDecoder::DecodeDataProcessingShiftedReg(
         DecodedInsn* insn, ArmOpcode op) {
     const uint32_t opcode = (op.word >> 21) & 0xFu;
     const uint32_t s      = (op.word >> 20) & 0x1u;
-    const uint32_t rn     = (op.word >> 16) & 0xFu;
-    const uint32_t rd     = (op.word >> 12) & 0xFu;
+    uint32_t       rn     = (op.word >> 16) & 0xFu;
+    uint32_t       rd     = (op.word >> 12) & 0xFu;
     const uint32_t rs     = (op.word >>  8) & 0xFu;
     const uint32_t type   = (op.word >>  5) & 0x3u;
     const uint32_t rm     =  op.word        & 0xFu;
 
     const bool is_test = opcode >= 8u && opcode <= 11u;
     const bool is_move = opcode == 13u || opcode == 15u;
-    if (is_move && rn != 0u) {
-        return false;
+    /* The XScale ignores the SBZ Rn of MOV/MVN and Rd of TST/TEQ/CMP/CMN; Esmertec's Jeode JIT emits such encodings. */
+    if (is_move) {
+        rn = 0u;
     }
-    if (is_test && rd != 0u) {
-        return false;
+    if (is_test) {
+        rd = 0u;
     }
     if (rm == ArmGpr::kR15 || rs == ArmGpr::kR15) {
         return false;
