@@ -22,7 +22,7 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC third_party/imgui third_party/imgui/backends ${SDL2_INCLUDE_DIRS})
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_ES2)
 
-add_executable(cewm src/main.cpp src/launcher/theme.cpp)
+add_executable(cewm src/main.cpp src/launcher/theme.cpp host/haptic.cpp)
 pkg_check_modules(DBUS dbus-1)
 if(DBUS_FOUND)
   target_sources(cewm PRIVATE host/device_stats.cpp)

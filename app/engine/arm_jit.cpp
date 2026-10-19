@@ -136,7 +136,12 @@ void ArmJit::PrintFatalDump() {
 void ArmJit::FlushTranslationCache() {}  // nothing is cached
 void ArmJit::SetDmaRegion(uint32_t, uint32_t) {}
 
-std::optional<uint8_t*> ArmJit::PeekGuestVa(uint32_t va) { return translator_->PeekDataTlb(va); }
+std::optional<uint8_t*> ArmJit::PeekGuestVa(uint32_t va) {
+    // A trace must also see mapped pages that are absent from the data TLB.
+    // Probe without filling the TLB or raising a guest exception.
+    if (auto* p = translator_->PeekVaToHost(va)) return p;
+    return std::nullopt;
+}
 uint8_t* ArmJit::ResolveGuestVaToHost(uint32_t va) { return translator_->PeekVaToHost(va); }
 bool ArmJit::ResolveGuestVaToPa(uint32_t va, uint32_t* pa) { return translator_->PeekVaToPa(va, pa); }
 

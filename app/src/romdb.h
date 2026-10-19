@@ -17,6 +17,9 @@ struct Known {
 };
 
 inline const Known kKnown[] = {
+    {"19440a03009a7bf15dfb4b5906a2e7ff6ada250193efecbd6da77b7ff4c8a7f2", "Windows Mobile 5.0 (ASUS P525)", "asus_mypal_p525", 240, 320, true},
+    {"ae41ce390a1bec9a95fd351c69a91115295444fd02e618efe5a2698439d1cb2c", "Windows Mobile 5.0 (ASUS P525, bridge)", "asus_mypal_p525", 240, 320, true},
+    {"46bf93dd113ee2e00720b7d33c23b084775e10efdab2088a8573cc459a2b897f", "Windows Mobile 6.1 (ASUS P525 V4.010 RU, bridge)", "asus_mypal_p525", 240, 320, true},
     {"7e5476179912538d9ce1bd4e03fadb966e4e4e3f5cf7213e98c69b487376d840", "Windows Mobile 5.0", "devemu_wqvga", 240, 400, false},
     {"a63fc18bc78ad2dcef33252eaf501e681214139b40cda5876dc77a7e754851f6", "Windows Mobile 6.0", "devemu_wvga", 480, 800, false},
     {"6c324827eeb03cba950a7468328c6e816d2d6ae6689bc737a17e53e008981d62", "Windows Mobile 6.1 (240x400)", "devemu_wqvga", 240, 400, false},

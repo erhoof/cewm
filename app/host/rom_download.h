@@ -13,5 +13,7 @@ struct State {
 // Fetches bundle `name` into dir/<name>/ on a background thread; ignored while one is running.
 void Start(const std::string& name, const std::string& dir);
 State Get();
+// Unpacks the files of a local .zip whose names end in only_ext (all when null) into dir.
+bool UnzipFile(const std::string& zip, const std::string& dir, const char* only_ext, std::string& err);
 void Reset();  // back to idle after the result was taken
 }  // namespace cewm::romdl

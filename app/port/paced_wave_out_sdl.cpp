@@ -35,8 +35,8 @@ struct PacedWaveOut::Impl {
     uint32_t blocks = 0, minq = ~0u;
     uint64_t sumq = 0;
 
-    static constexpr double kTargetMs = 70.0, kPrimeMs = 40.0, kMaxAdj = 0.06;
-    static constexpr uint32_t kMaxQueueMs = 220;
+    static constexpr double kTargetMs = 180.0, kPrimeMs = 120.0, kMaxAdj = 0.06;
+    static constexpr uint32_t kMaxQueueMs = 400;
 
     double QueuedMs() const { return have.freq ? SDL_GetQueuedAudioSize(dev) * 1000.0 / (4.0 * have.freq) : 0.0; }
     void Reset() {

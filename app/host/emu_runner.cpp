@@ -27,7 +27,9 @@
 #include <string>
 #include <vector>
 
+extern void (*g_p525_persist_root)();
 namespace cewm {
+static bool g_pen_down = false, g_pen_native = false;
 namespace {
 std::unique_ptr<CerfEmulator> g_emu;
 std::mutex g_save_mu;  // keeps a background snapshot from racing EmuStop
@@ -76,6 +78,8 @@ void EmuStart(const std::string& rom, int w, int h, const std::string& state_pat
     if (getenv("CEWM_PROXY")) fprintf(stderr, "[PROXY] listening on %d\n", StartHttpProxy(18080));  // guest sees it as 10.0.2.2:18080
     for (auto& a : g_args) g_argv.push_back(a.data());
     g_argv.push_back(nullptr);
+    Host().calibrating = false;
+    g_pen_down = false;
     Host().state_path = state_path;
     Host().resume = resume;
     Host().guest_w = w;
@@ -102,13 +106,25 @@ void EmuStop(bool save) {
     g_pclog_stop = true;
     g_emu->Get<JitRunner>().RequestStop();
     g_emu->WaitForExit();
+    if (g_p525_persist_root) g_p525_persist_root();  // writable flash back to the VM's p525-root.img
     if (save && !Host().state_path.empty() && !Host().powered_down) g_emu->Get<Hibernation>().Save(L"");
     g_emu.reset();
 }
 
-void EmuSnapshot() {  // live save: Hibernation::Save freezes the guest itself
+void EmuSnapshot() {  // live save: park the CPU, then freeze peripheral workers
     std::lock_guard<std::mutex> lk(g_save_mu);
-    if (g_emu && !Host().state_path.empty() && !Host().powered_down) g_emu->Get<Hibernation>().Save(L"");
+    if (!g_emu || Host().state_path.empty() || Host().powered_down) return;
+    // EmulationFreeze only stops peripheral workers. Park the CPU too, so the
+    // saved registers, RAM and timer deadlines all describe the same instant.
+    auto& runner = g_emu->Get<JitRunner>();
+    runner.Pause();
+    try {
+        g_emu->Get<Hibernation>().Save(L"");
+    } catch (...) {
+        runner.Resume();
+        throw;
+    }
+    runner.Resume();
 }
 
 bool EmuGrabFrame(std::vector<uint32_t>& bgra, uint32_t& w, uint32_t& h) {
@@ -140,25 +156,38 @@ void EmuPen(bool down, int x, int y, int w, int h) {
     // (the stock panel's calibration is only good at the native size). It needs the Guest Additions driver to be up.
     auto* gp = g_emu->TryGet<CerfVirtPointer>();
     auto* live = g_emu->TryGet<CerfGuestLiveness>();
-    if (gp && live && live->IsAlive() && w > 1 && h > 1) {
-        static bool was_down_ga = false;
+    if (getenv("CEWM_INPUT_TRACE")) {
+        static bool traced_down = false;
+        if (down != traced_down) {
+            fprintf(stderr, "[INPUT] pen %s %d,%d surface %dx%d GA %d alive %d\n",
+                    down ? "down" : "up", x, y, w, h, gp != nullptr, live && live->IsAlive());
+            traced_down = down;
+        }
+    }
+    // The P525 only runs at its native 240x320, so its real touch driver takes every tap: GA
+    // mouse events never reach the raw calibration reads, and mixing the two routes stalled Align Screen.
+    if (!g_pen_down) {
+        const bool native_only = Host().board_id == "asus_mypal_p525";
+        g_pen_native = native_only || !gp || !live || !live->IsAlive() || w <= 1 || h <= 1;
+    }
+    if (!g_pen_native) {
         const uint32_t nx = (uint32_t)((uint64_t)std::clamp(x, 0, w - 1) * 65535u / (uint32_t)(w - 1));
         const uint32_t ny = (uint32_t)((uint64_t)std::clamp(y, 0, h - 1) * 65535u / (uint32_t)(h - 1));
-        if (down || was_down_ga) gp->SetPointer(nx, ny, down ? 1u : 0u);
-        was_down_ga = down;
+        if (down || g_pen_down) gp->SetPointer(nx, ny, down ? 1u : 0u);
+        g_pen_down = down;
         return;
     }
     auto* t = g_emu->TryGet<TouchInput>();
     if (!t) return;
-    static bool was_down = false;
-    if (down && !was_down) t->OnPenDown(x, y);
+    if (down && !g_pen_down) t->OnPenDown(x, y);
     else if (down) t->OnPenMove(x, y);
-    else if (was_down) t->OnPenUp(x, y);
-    was_down = down;
+    else if (g_pen_down) t->OnPenUp(x, y);
+    g_pen_down = down;
 }
 
 void EmuKey(uint8_t vk, bool up) {
     if (!g_emu) return;
+    if (getenv("CEWM_INPUT_TRACE")) fprintf(stderr, "[INPUT] key 0x%02X %s\n", vk, up ? "up" : "down");
     if (auto* k = g_emu->TryGet<KeyboardRouter>()) k->OnHostKey(vk, up);
 }
 }  // namespace cewm

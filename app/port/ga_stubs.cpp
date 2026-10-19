@@ -6,6 +6,7 @@
 #include "host/guest_calibration_warning.h"
 #include "host/refresh_rate_service.h"
 #include "core/cerf_emulator.h"
+#include "../host/host_state.h"
 
 class HostCanvas { virtual void Key(); };
 void HostCanvas::Key() {}
@@ -15,10 +16,11 @@ void BootScreen::OnReady() {}
 void BootScreen::OnShutdown() {}
 void BootScreen::SetRestartLabel(const wchar_t*) {}
 
-bool GuestCalibrationWarning::ShouldRegister() { return false; }
+bool GuestCalibrationWarning::ShouldRegister() { return true; }
 void GuestCalibrationWarning::OnReady() {}
-void GuestCalibrationWarning::OnCalibrationAppeared() {}
-void GuestCalibrationWarning::OnCalibrationDisappeared() {}
+void GuestCalibrationWarning::OnCalibrationAppeared() { cewm::Host().calibrating = true; }
+void GuestCalibrationWarning::OnCalibrationDisappeared() { cewm::Host().calibrating = false; }
+REGISTER_SERVICE(GuestCalibrationWarning);
 
 int RefreshRateService::GetRefreshRate() { return 60; }
 REGISTER_SERVICE(RefreshRateService);

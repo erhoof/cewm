@@ -1958,6 +1958,17 @@
       },
       "ga_color_depth": 24,
       "rom_placing_mode": "flat_container"
+    },
+    {
+      "id": "asus_p525",
+      "name": "ASUS P525",
+      "soc_id": "pxa270",
+      "lcd_panel_size": {
+        "width": 240,
+        "height": 320
+      },
+      "ga_color_depth": 16,
+      "rom_placing_mode": "flat_container"
     }
   ],
   "boards": [
@@ -2657,6 +2668,13 @@
       "board_family_id": "nokia_sea_ray",
       "support_level": "no_support",
       "internal__spec_divergences": "HSDPA 850/900/1900/2100"
+    },
+    {
+      "id": "asus_mypal_p525",
+      "name": "ASUS P525",
+      "short_name": "P525",
+      "board_family_id": "asus_p525",
+      "support_level": "unknown_partial"
     }
   ],
   "rom_types": [

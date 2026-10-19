@@ -91,7 +91,16 @@ void TraceManager::GuardUnique(uint32_t runtime_va) {
     CerfFatalExit(CERF_FATAL_RUNTIME_ERROR);
 }
 
+namespace cerfengine { extern bool g_pc_hooks_on; }
+// HasPcTrace runs at every interpreted block entry; this bitmap answers "no hook here" without a hash lookup.
+// shortcut: bits are never cleared, a stale bit only costs one hash lookup; one filter shared by all TraceManagers.
+uint64_t g_cewm_pc_filter[1024];  // read directly by the interpreter (engine/arm_interp.cpp)
+#define g_pc_filter g_cewm_pc_filter
+static inline void PcFilterSet(uint32_t pc) { const uint32_t h = (pc >> 1) & 0xFFFFu; g_pc_filter[h >> 6] |= 1ull << (h & 63); }
+
 void TraceManager::OnPc(uint32_t runtime_va, TraceHandler handler) {
+    PcFilterSet(runtime_va);
+    cerfengine::g_pc_hooks_on = true;
     GuardUnique(runtime_va);
     pc_traces_[runtime_va] = {std::nullopt, std::move(handler)};
 }
@@ -99,6 +108,8 @@ void TraceManager::OnPc(uint32_t runtime_va, TraceHandler handler) {
 void TraceManager::OnPcFiltered(uint32_t       runtime_va,
                                 TracePredicate predicate,
                                 TraceHandler   handler) {
+    PcFilterSet(runtime_va);
+    cerfengine::g_pc_hooks_on = true;
     GuardUnique(runtime_va);
     pc_traces_[runtime_va] =
         {std::optional<TracePredicate>{std::move(predicate)},
@@ -106,7 +117,8 @@ void TraceManager::OnPcFiltered(uint32_t       runtime_va,
 }
 
 bool TraceManager::HasPcTrace(uint32_t pc) const {
-    if (pc_traces_.empty()) return false;
+    const uint32_t h = (pc >> 1) & 0xFFFFu;
+    if (!(g_pc_filter[h >> 6] >> (h & 63) & 1)) return false;
     return pc_traces_.count(pc) > 0;
 }
 

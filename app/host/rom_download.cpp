@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -167,7 +168,7 @@ uint32_t R16(const uint8_t* p) { return p[0] | p[1] << 8; }
 uint32_t R32(const uint8_t* p) { return R16(p) | R16(p + 2) << 16; }
 
 // Unpacks every file of the archive into dir (flat: only the base name is used, so a hostile archive cannot write elsewhere).
-bool Unzip(const std::vector<uint8_t>& z, const std::string& dir, std::string& err) {
+bool Unzip(const std::vector<uint8_t>& z, const std::string& dir, std::string& err, const char* only_ext = nullptr) {
     if (z.size() < 22) { err = "архив повреждён"; return false; }
     size_t e = z.size() - 22;
     while (e > 0 && R32(&z[e]) != 0x06054b50) e--;
@@ -184,6 +185,7 @@ bool Unzip(const std::vector<uint8_t>& z, const std::string& dir, std::string& e
         const size_t sl = name.find_last_of('/');
         if (sl != std::string::npos) name = name.substr(sl + 1);
         if (name.empty() || name == "." || name == "..") continue;  // a folder entry
+        if (only_ext && (name.size() < strlen(only_ext) || strcasecmp(name.c_str() + name.size() - strlen(only_ext), only_ext))) continue;
         if (usize > kMaxUnpacked || loff + 30 > z.size() || R32(&z[loff]) != 0x04034b50) { err = "архив повреждён"; return false; }
         const size_t data = loff + 30 + R16(&z[loff + 26]) + R16(&z[loff + 28]);
         if (data + csize > z.size()) { err = "архив повреждён"; return false; }
@@ -293,6 +295,19 @@ void Run(std::string name, std::string dir) {
     g_busy = false;
 }
 }  // namespace
+
+bool UnzipFile(const std::string& zip, const std::string& dir, const char* only_ext, std::string& err) {
+    std::vector<uint8_t> z;
+    if (FILE* r = fopen(zip.c_str(), "rb")) {
+        fseek(r, 0, SEEK_END);
+        const long n = ftell(r);
+        fseek(r, 0, SEEK_SET);
+        if (n > 0) { z.resize(n); if (fread(z.data(), 1, z.size(), r) != z.size()) z.clear(); }
+        fclose(r);
+    }
+    if (z.empty()) { err = "не удалось прочитать архив"; return false; }
+    return Unzip(z, dir, err, only_ext);
+}
 
 void Start(const std::string& name, const std::string& dir) {
     if (g_busy.exchange(true)) return;

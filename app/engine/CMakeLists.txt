@@ -6,16 +6,17 @@ list(FILTER UP_SRC EXCLUDE REGEX "/(engine|host_platform_win32|arm_jit|emit_jump
 # Patched copy of upstream's include tree: ArmTlbEntry::va_addend (host - va) must be pointer-sized on a 64-bit host, and the
 # 16-byte/64-byte-set layout asserts only serve the x86 emitter. Done at configure time so upstream stays untouched.
 set(PINC ${CMAKE_CURRENT_BINARY_DIR}/include)
-file(COPY ${UP}/include/ DESTINATION ${PINC})
-file(READ ${PINC}/cerfengine/arm/arm_mmu_state.h MMU_H)
+file(COPY ${UP}/include/ DESTINATION ${PINC}
+  PATTERN "arm_mmu_state.h" EXCLUDE PATTERN "arm_system_host.h" EXCLUDE)
+file(READ ${UP}/include/cerfengine/arm/arm_mmu_state.h MMU_H)
 string(REPLACE "uint32_t va_addend;" "uintptr_t va_addend;" MMU_H "${MMU_H}")
 string(REGEX REPLACE "static_assert\\(sizeof\\(ArmTlbEntry\\) == 16,[^;]*;" "" MMU_H "${MMU_H}")
 string(REGEX REPLACE "static_assert\\(\\(kArmTlbWays \\* sizeof\\(ArmTlbEntry\\)\\)[^;]*;" "" MMU_H "${MMU_H}")
-file(WRITE ${PINC}/cerfengine/arm/arm_mmu_state.h "${MMU_H}")
+file(GENERATE OUTPUT ${PINC}/cerfengine/arm/arm_mmu_state.h CONTENT "${MMU_H}")
 # gcc 12 (Aurora SDK) rejects `return {.action = ...}` for ArmCoprocDecision because of this array's `= {}` initializer.
-file(READ ${PINC}/cerfengine/arm/arm_system_host.h SYS_H)
+file(READ ${UP}/include/cerfengine/arm/arm_system_host.h SYS_H)
 string(REPLACE "cases[kArmCoprocMaxCases] = {};" "cases[kArmCoprocMaxCases];" SYS_H "${SYS_H}")
-file(WRITE ${PINC}/cerfengine/arm/arm_system_host.h "${SYS_H}")
+file(GENERATE OUTPUT ${PINC}/cerfengine/arm/arm_system_host.h CONTENT "${SYS_H}")
 add_library(cerfengine STATIC ${UP_SRC} engine_linux.cpp host_platform_linux.cpp arm_jit.cpp arm_interp.cpp arm_tlb_ops.cpp jit_stubs.cpp)
 target_include_directories(cerfengine PUBLIC ${PINC} ${CMAKE_CURRENT_SOURCE_DIR}/../../cerf/libservicelocator/include
   PRIVATE ${UP}/src ${UP}/src/arm shim)

@@ -20,12 +20,16 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include <mutex>
 #include <atomic>
 // Any ARM build (aarch64 or the 32-bit armv7hl) runs on a phone/tablet: real full-screen window and display size; only the x86 laptop build fakes a phone.
 #if defined(__aarch64__) || defined(__arm__)
 #define CEWM_ON_PHONE 1
 #endif
 #include "emu_runner.h"
+#include "p525_keypad.h"
+#include "../host/p525_prepare.h"
+#include "../host/haptic.h"
 #include "host_state.h"
 #include "device_stats.h"
 
@@ -61,6 +65,8 @@ struct Settings {
     int border_px = 48;
     int top_px = 144;  // extra space above the guest for the camera cutout (default 3x the border)
     bool softkeys = true;
+    bool p525_keypad = false;
+    bool p525_keybg = false;  // dark rounded plates behind the T9 keys
     int bar_px = 140;
     char board[24] = "devemu_wvga";  // Device Emulator board variant for the ROM (its LCD class); 5.0 is a QVGA build
     int fixed_h = 0;  // >0: the ROM wants exactly this guest height (6.5: 800, CE: 480): the picture is fitted and centred unless fill is on; the editor warns, nothing is locked
@@ -71,6 +77,7 @@ struct Settings {
     int dpi = 0;  // >0: compact mode, the guest sees this logical dpi (Guest Additions only)
     bool ga = false;  // Guest Additions: CE-side driver giving a shared folder (the VM's Storage dir) and a NAT NIC; changes the display path, so it has its own saved machine
     int btn_dy = 0;  // soft-button icons: vertical shift in px (+ down), for screens whose visible area differs from the window
+    bool orig_res = false;  // run at the ROM's own resolution: no fill, no width change (off for VMs saved before the option existed)
     bool fill = false;  // fill the whole screen: full width, guest height as tall as the LCD allows, soft buttons in the leftover strip
     bool resume = true;  // save the machine when leaving the guest, restore it on start (like flash surviving a power cycle)
 } g_s;  // the running VM (or the command-line run)
@@ -113,6 +120,8 @@ bool SetKey(Settings& s, const std::string& k, const std::string& v) {
     else if (k == "borders") s.borders = atoi(v.c_str());
     else if (k == "border_px") s.border_px = std::clamp(atoi(v.c_str()), 0, 160);
     else if (k == "softkeys") s.softkeys = atoi(v.c_str());
+    else if (k == "p525_keypad") s.p525_keypad = atoi(v.c_str());
+    else if (k == "p525_keybg") s.p525_keybg = atoi(v.c_str());
     else if (k == "top_px") s.top_px = std::clamp(atoi(v.c_str()), 0, 400);
     else if (k == "bar_px") s.bar_px = std::clamp(atoi(v.c_str()), 60, 300);
     else if (k == "board" && !v.empty()) snprintf(s.board, sizeof s.board, "%s", v.c_str());
@@ -125,6 +134,7 @@ bool SetKey(Settings& s, const std::string& k, const std::string& v) {
     else if (k == "ga") s.ga = atoi(v.c_str());
     else if (k == "btn_dy") s.btn_dy = std::clamp(atoi(v.c_str()), -150, 150);
     else if (k == "fill") s.fill = atoi(v.c_str());
+    else if (k == "origres") s.orig_res = atoi(v.c_str());
     else if (k == "resume") s.resume = atoi(v.c_str());
     else return false;
     return true;
@@ -152,8 +162,10 @@ bool WritePref(const std::string& path, const Settings& s) {
     FILE* f = fopen(path.c_str(), "w");
     if (!f) return false;
     const char* base = strrchr(s.rom, '/');
-    fprintf(f, "rom=%s\ndev_w=%d\ndev_h=%d\nfixed_w=%d\nkeep_w=%d\nrot=%d\nn=%g\norig_h=%d\nborders=%d\nborder_px=%d\ntop_px=%d\nsoftkeys=%d\nbar_px=%d\nboard=%s\nfixed_h=%d\ndpi=%d\nga=%d\nbtn_dy=%d\nfill=%d\nresume=%d\njit=%d\naudio=%d\nradio=%d\nproxy=%d\n",
-            base ? base + 1 : s.rom, s.dev_w, s.dev_h, s.fixed_w, s.keep_w, s.rot, s.n, s.orig_h, s.borders, s.border_px, s.top_px, s.softkeys, s.bar_px, s.board, s.fixed_h, s.dpi, s.ga, s.btn_dy, s.fill,
+    fprintf(f, "p525_keypad=%d\n", s.p525_keypad);
+    fprintf(f, "p525_keybg=%d\n", s.p525_keybg);
+    fprintf(f, "rom=%s\ndev_w=%d\ndev_h=%d\nfixed_w=%d\nkeep_w=%d\nrot=%d\nn=%g\norig_h=%d\nborders=%d\nborder_px=%d\ntop_px=%d\nsoftkeys=%d\nbar_px=%d\nboard=%s\nfixed_h=%d\ndpi=%d\nga=%d\nbtn_dy=%d\nfill=%d\norigres=%d\nresume=%d\njit=%d\naudio=%d\nradio=%d\nproxy=%d\n",
+            base ? base + 1 : s.rom, s.dev_w, s.dev_h, s.fixed_w, s.keep_w, s.rot, s.n, s.orig_h, s.borders, s.border_px, s.top_px, s.softkeys, s.bar_px, s.board, s.fixed_h, s.dpi, s.ga, s.btn_dy, s.fill, s.orig_res,
             s.resume, s.jit, s.audio, s.radio, s.proxy);
     return fclose(f) == 0;
 }
@@ -173,7 +185,9 @@ Uint32 g_start_ticks = 0;
 constexpr float kBtnGap = 12.f;
 constexpr int kMaxGuestH = 1020;  // the guest LCD size fields are 10 bits wide
 constexpr float kMinBar = 70.f;   // smallest soft-button strip in fill mode
-struct Layout { float inset, top, aw, ah, bar, y_btn; int fill_gh; };
+// gapk/pad: the dark plate around the picture (T9 key backgrounds on): it runs between the key columns' outer edges, the picture sits pad inside it.
+struct Layout { float inset, top, aw, ah, bar, y_btn; int fill_gh; float gapk = 0, pad = 0, dx = 0;
+                float paw() const { return aw - gapk - 2 * pad; } float pah() const { return ah - gapk / 2 - 2 * pad; } };
 bool Fill() { return g_s.fill; }
 // Traced from aurora/icon_172.png: four pane outlines (star-shaped around their centroid); units of half the flag width, flag centre at 0,0.
 static const float kFlagC[4][2] = {{-0.296f,-0.529f},{0.526f,-0.262f},{-0.527f,0.271f},{0.297f,0.529f}};
@@ -184,7 +198,10 @@ static const float kFlag[4][48][2] = {
   {{0.697f,0.529f},{0.682f,0.580f},{0.669f,0.629f},{0.654f,0.677f},{0.638f,0.726f},{0.619f,0.776f},{0.586f,0.818f},{0.539f,0.845f},{0.489f,0.863f},{0.441f,0.877f},{0.393f,0.890f},{0.345f,0.899f},{0.297f,0.905f},{0.247f,0.907f},{0.195f,0.908f},{0.141f,0.904f},{0.087f,0.892f},{0.030f,0.876f},{-0.029f,0.854f},{-0.088f,0.824f},{-0.133f,0.777f},{-0.146f,0.712f},{-0.133f,0.644f},{-0.116f,0.583f},{-0.099f,0.529f},{-0.084f,0.479f},{-0.069f,0.431f},{-0.056f,0.383f},{-0.041f,0.334f},{-0.025f,0.282f},{-0.009f,0.223f},{0.018f,0.166f},{0.070f,0.137f},{0.139f,0.149f},{0.202f,0.175f},{0.253f,0.194f},{0.297f,0.206f},{0.338f,0.214f},{0.380f,0.217f},{0.426f,0.216f},{0.479f,0.213f},{0.548f,0.201f},{0.639f,0.187f},{0.725f,0.200f},{0.763f,0.259f},{0.753f,0.340f},{0.730f,0.413f},{0.712f,0.474f}},
 };
 static constexpr int kFlagN = 48;
-bool Soft() { return g_s.softkeys; }
+bool Soft() { return g_s.softkeys || g_s.p525_keypad; }
+float ButtonBarHeight(float width) {
+    return g_s.p525_keypad ? width * 0.925f : (Soft() ? (float)g_s.bar_px : 0.f);
+}
 bool FillBar() { return Fill() && Soft(); }  // fill with a soft-button strip under the picture
 int g_scaler_w = 0, g_scaler_h = 0;
 
@@ -195,7 +212,8 @@ Layout MakeLayout(float W, float H) {
         l.top = g_s.top_px;  // camera notch: the picture starts below it
         const float n = FixedW() > 0 ? W / FixedW() : g_s.n, avail = H - l.top;
         int gh = std::min(kMaxGuestH, (int)(avail / n + 1e-3f));
-        if (Soft() && avail - gh * n < kMinBar) gh = (int)((avail - kMinBar) / n + 1e-3f);
+        const float min_bar = g_s.p525_keypad ? ButtonBarHeight(W) : kMinBar;
+        if (Soft() && avail - gh * n < min_bar) gh = (int)((avail - min_bar) / n + 1e-3f);
         l.fill_gh = std::max(1, gh);
         if (Soft()) { l.ah = l.fill_gh * n; l.bar = avail - l.ah; l.y_btn = l.top + l.ah; }
         else { l.ah = avail; l.y_btn = H; }  // no buttons: the picture takes the whole height, centred
@@ -203,27 +221,34 @@ Layout MakeLayout(float W, float H) {
     }
     l.inset = g_s.borders ? g_s.border_px : 0;
     l.top = g_s.top_px;  // independent of the side borders: the camera cutout is there either way
-    l.bar = Soft() ? g_s.bar_px : 0;
-    const float below = Soft() ? l.inset + l.bar : 0;  // gap above the buttons + the buttons
+    l.bar = ButtonBarHeight(W - 2 * l.inset);
     l.aw = W - 2 * l.inset;
-    l.ah = H - l.top - below - l.inset /*bottom*/;
+    if (g_s.p525_keypad && FixedW() > 0 && g_s.fixed_h > 0) {  // too short for the whole device: shrink it (screen + keys) to fit, same aspect, centred
+        const float fp = g_s.p525_keybg ? 0.955f : 1.f, fg = g_s.p525_keybg ? 0.0325f : 0.f;
+        const float k = (float)g_s.fixed_h / FixedW() * fp + fg + 0.925f, need = l.top + 2 * l.inset + k * l.aw;
+        if (need > H) { const float w = std::max(60.f, (H - l.top - 2 * l.inset) / k); l.dx = (l.aw - w) / 2; l.aw = w; l.bar = ButtonBarHeight(w); }
+    }
+    l.ah = H - l.top - (l.bar > 0 ? l.inset + l.bar : 0) - l.inset /*bottom*/;
     l.y_btn = l.top + l.ah + l.inset;
+    if (g_s.p525_keypad && g_s.p525_keybg) {
+        l.gapk = l.aw * 0.025f; l.pad = std::round(l.aw * 0.010f);
+    }
     return l;
 }
 
 // Effective scale: from a fixed guest width when set, else the chosen 1/N.
 float EffScale(const Layout& l) {
-    if (!Fill() && FixedW() > 0 && g_s.fixed_h > 0) return std::min(l.aw / FixedW(), l.ah / g_s.fixed_h);  // native-size ROM: fit, never stretch
-    return FixedW() > 0 ? l.aw / FixedW() : g_s.n;
+    if (!Fill() && FixedW() > 0 && g_s.fixed_h > 0) return std::min(l.paw() / FixedW(), l.pah() / g_s.fixed_h);  // native-size ROM: fit, never stretch
+    return FixedW() > 0 ? l.paw() / FixedW() : g_s.n;
 }
 
 // Guest size: the fixed width (or area / N) by area height / scale.
 void GuestSizeFor(float W, float H, int* gw, int* gh) {
     const Layout l = MakeLayout(W, H);
     const float n = EffScale(l);
-    *gw = FixedW() > 0 ? FixedW() : std::max(1, (int)(l.aw / n));
+    *gw = FixedW() > 0 ? FixedW() : std::max(1, (int)(l.paw() / n));
     // The guest's LCD size fields are 10 bits wide (1066 came back as a 42-line frame), so cap the height; the image is centred.
-    *gh = Fill() ? l.fill_gh : g_s.fixed_h > 0 ? g_s.fixed_h : std::clamp((int)(l.ah / n), 1, kMaxGuestH);
+    *gh = Fill() ? l.fill_gh : g_s.fixed_h > 0 ? g_s.fixed_h : std::clamp((int)(l.pah() / n), 1, kMaxGuestH);
 }
 
 // One saved machine per VM: state-<W>x<H><tail>.img in the VM's dir. The guest size is part of the file name, and a start with a saved
@@ -350,6 +375,7 @@ void StartEmu() {
 void StopEmu(bool booted) {
     if (!g_started) return;
     if (g_boot_thread.joinable()) g_boot_thread.join();
+    ReleaseP525Key();
     cewm::EmuStop(g_s.resume && booted);
     g_started = false;
 }
@@ -407,21 +433,33 @@ void ScanVms() {
     std::sort(g_vms.begin(), g_vms.end(), [](const VmEntry& a, const VmEntry& b) { return a.name < b.name; });
 }
 
-bool CopyFile(const std::string& src, const std::string& dst) {
+// sparse: all-zero 64 KiB blocks become holes (a blank NAND image is almost all zeros).
+bool CopyFile(const std::string& src, const std::string& dst, bool sparse = false) {
     FILE* in = fopen(src.c_str(), "rb");
     if (!in) return false;
     const std::string tmp = dst + ".part";
     FILE* out = fopen(tmp.c_str(), "wb");
     if (!out) { fclose(in); return false; }
-    std::vector<char> buf(1 << 20);
+    std::vector<char> buf(sparse ? 1 << 16 : 1 << 20);
     bool ok = true;
-    for (size_t n; ok && (n = fread(buf.data(), 1, buf.size(), in)) > 0;) ok = fwrite(buf.data(), 1, n, out) == n;
+    long total = 0;
+    for (size_t n; ok && (n = fread(buf.data(), 1, buf.size(), in)) > 0;) {
+        total += (long)n;
+        const bool zero = sparse && std::all_of(buf.begin(), buf.begin() + n, [](char c) { return c == 0; });
+        ok = zero ? fseek(out, (long)n, SEEK_CUR) == 0 : fwrite(buf.data(), 1, n, out) == n;
+    }
+    if (ok && sparse) ok = fflush(out) == 0 && ftruncate(fileno(out), total) == 0;
     ok = ok && !ferror(in);
     ok = fclose(out) == 0 && ok;
     fclose(in);
     ok = ok && rename(tmp.c_str(), dst.c_str()) == 0;
     if (!ok) unlink(tmp.c_str());
     return ok;
+}
+
+// P525 "hard reset": the writable NAND volume goes back to the blank image kept next to it (registry, settings and files are lost).
+bool ResetNand(const std::string& dir) {
+    return IsFile(dir + "/p525-root.blank") && CopyFile(dir + "/p525-root.blank", dir + "/p525-root.img", true);
 }
 
 int RmRf(const std::string& p) {
@@ -459,12 +497,26 @@ void TabletDefaults() {
     g_ed.top_px = land ? 0 : Settings().top_px;
 }
 
+void P525Defaults() {
+    if (strcmp(g_ed.board, "asus_mypal_p525")) return;
+    g_ed.ga = false;
+    g_ed.orig_res = true;
+    g_ed.fixed_w = 240;
+    g_ed.orig_h = g_ed.fixed_h = 320;
+    g_ed.fill = false;
+    g_ed.keep_w = true;
+    g_ed.p525_keypad = true;
+    g_ed.p525_keybg = true;
+}
+
 // Picks a ROM: its hash tells which board and screen size it wants (unknown images get QVGA 240x320).
 void SetRom(const std::string& path) {
     snprintf(g_ed.rom, sizeof g_ed.rom, "%s", path.c_str());
     g_ed_hashed = path;
     const std::string sha = romdb::Sha256File(path);
+    static const romdb::Known kP525Bundle = {"", "Windows Mobile (ASUS P525)", "asus_mypal_p525", 240, 320, true};  // a bundle made by the preparer: any firmware
     const romdb::Known* k = romdb::Find(sha);
+    if (!k && Base(path) == "p525-bridge.nb0" && IsFile(path.substr(0, path.rfind('/')) + "/p525-storage.bin")) k = &kP525Bundle;
     g_ed_label = k ? k->label : "";
     g_ed.fixed_w = k ? k->w : 240;  // unknown image: the most generic Windows Mobile screen, QVGA
     g_ed.orig_h = k ? k->h : 320;
@@ -472,10 +524,11 @@ void SetRom(const std::string& path) {
     g_ed.fixed_h = k && k->exact ? k->h : 0;
     if (k && k->exact) { g_ed.fill = false; g_ed.keep_w = true; }  // safe defaults for an image that wants its native size; the user may change them
     snprintf(g_ed.board, sizeof g_ed.board, "%s", k ? k->board : "devemu");
-    if (real) g_ed.ga = false;  // Guest Additions are off by default; they also work on the real handhelds (any resolution, fill-screen)
+    if (real) g_ed.ga = true;  // Guest Additions work on the real handhelds too
+    P525Defaults();
     g_ed.dpi = 0;
     TabletDefaults();
-    if (!g_ed_touched) snprintf(g_ed_name, sizeof g_ed_name, "%s", CleanName(Stem(path)).c_str());
+    if (!g_ed_touched) snprintf(g_ed_name, sizeof g_ed_name, "%s", k == &kP525Bundle ? "ASUS P525" : CleanName(Stem(path)).c_str());
 }
 
 // The pixel settings (borders, camera-notch offset, button bar, icon shift) are tied to the screen they were made on. On another device
@@ -500,7 +553,8 @@ void OpenEditor(int idx) {  // -1: a new VM
     g_ed_label.clear();
     if (idx < 0) {
         g_ed = Settings();
-        g_ed.ga = false;  // shared folder and network (Guest Additions) are opt-in
+        g_ed.ga = true;  // shared folder and network on by default for a new VM
+        g_ed.orig_res = true;  // and the ROM's own resolution
         g_ed.fixed_w = 240; g_ed.orig_h = 320;
         snprintf(g_ed.board, sizeof g_ed.board, "devemu");
         snprintf(g_ed_name, sizeof g_ed_name, "Generic VM");
@@ -535,9 +589,18 @@ bool DoSave(Settings s, const std::string& name, const std::string& orig, std::s
     mkdir(dir.c_str(), 0755);
     const std::string rom = s.rom;
     if (!rom.empty() && rom.compare(0, dir.size() + 1, dir + "/") != 0) {  // a ROM from outside: keep our own copy
+        const std::string src_dir = rom.substr(0, rom.rfind('/'));
+        if (!strcmp(s.board, "asus_mypal_p525")) {
+            for (const char* n : {"p525-storage.bin", "p525-disk.bin", "p525-root.img"}) {
+                if (!IsFile(src_dir + "/" + n)) { *err = std::string("Нет файла ASUS P525: ") + n; return false; }
+            }
+            for (const char* n : {"p525-storage.bin", "p525-disk.bin", "p525-root.img"}) {
+                if (!CopyFile(src_dir + "/" + n, dir + "/" + n, !strcmp(n, "p525-root.img"))) { *err = std::string("Не удалось скопировать: ") + n; return false; }
+            }
+            if (!CopyFile(src_dir + "/p525-root.img", dir + "/p525-root.blank", true)) { *err = "Не удалось скопировать: p525-root.blank"; return false; }  // kept for the NAND reset
+        }
         const std::string dst = dir + "/" + Base(rom);
         if (!CopyFile(rom, dst)) { *err = "Не удалось скопировать ROM"; return false; }
-        const std::string src_dir = rom.substr(0, rom.rfind('/'));
         if (DIR* d = opendir(src_dir.c_str())) {  // the serial-config EEPROM next to the ROM (Jornada 720) belongs to the image
             while (dirent* e = readdir(d)) {
                 const std::string n = e->d_name;
@@ -549,7 +612,7 @@ bool DoSave(Settings s, const std::string& name, const std::string& orig, std::s
             }
             closedir(d);
         }
-        if (src_dir.compare(0, strlen(kStageDir) + 1, std::string(kStageDir) + "/") == 0) RmRf(src_dir);  // a downloaded image: the VM has its copy now
+        if (src_dir.compare(0, strlen(kStageDir) + 1, std::string(kStageDir) + "/") == 0 || src_dir == VmRoot() + "/.p525-stage") RmRf(src_dir);  // a downloaded or prepared image: the VM has its copy now
         if (!prev_rom.empty() && prev_rom != dst) unlink(prev_rom.c_str());
         DiscardStatesIn(dir);  // the saved machine belongs to the old image
         snprintf(s.rom, sizeof s.rom, "%s", dst.c_str());
@@ -623,6 +686,48 @@ void DrawTabs(const char* const* names, int n, int* tab) {
 
 // ---- screens --------------------------------------------------------------------------------------------------------------------
 
+// ---- P525 firmware: a vendor .zip / .cap is turned into a bootable bundle in the stage dir --------------------------------------------
+
+struct Prep { int phase = 0; int pct = 0; std::string text, rom; };  // phase: 0 idle, 1 busy, 2 done, 3 failed
+std::mutex g_prep_mu;
+Prep g_prep;
+
+void StartPrepare(const std::string& src) {
+    {
+        std::lock_guard<std::mutex> lk(g_prep_mu);
+        if (g_prep.phase == 1) return;
+        g_prep = Prep{1, 0, "Подготовка..."};
+    }
+    std::thread([src] {
+        const std::string out = VmRoot() + "/.p525-stage";  // the images are ~150 MB: not in /tmp, which may be RAM
+        std::string err;
+        const bool ok = cewm::p525::Prepare(src, out, [](int pct, const char* t) {
+            std::lock_guard<std::mutex> lk(g_prep_mu);
+            g_prep.pct = pct;
+            g_prep.text = t;
+        }, err);
+        if (ok && !strncmp(src.c_str(), kStageDir, strlen(kStageDir))) unlink(src.c_str());  // a downloaded CAP is not needed once the bundle exists
+        std::lock_guard<std::mutex> lk(g_prep_mu);
+        g_prep = ok ? Prep{2, 100, "Готово", out + "/p525-bridge.nb0"} : Prep{3, 0, err, ""};
+    }).detach();
+}
+
+Prep PrepGet() {
+    std::lock_guard<std::mutex> lk(g_prep_mu);
+    return g_prep;
+}
+
+// Called every frame by the views that start a preparation: hands a finished bundle to the editor. Returns true while busy.
+bool PrepPoll() {
+    const Prep p = PrepGet();
+    if (p.phase == 2) {
+        { std::lock_guard<std::mutex> lk(g_prep_mu); g_prep = Prep(); }
+        SetRom(p.rom);
+        g_view = View::Edit;
+    }
+    return p.phase == 1;
+}
+
 // ---- ROM file browser ---------------------------------------------------------------------------------------------------------
 
 struct BrowseEntry { std::string name; bool dir; off_t size; };
@@ -644,7 +749,7 @@ void ReadBrowseDir() {
                 for (char& c : lo) c = tolower((unsigned char)c);
                 const size_t dot = lo.rfind('.');
                 const std::string ext = dot == std::string::npos ? "" : lo.substr(dot);
-                if (ext == ".bin" || ext == ".nb0" || ext == ".img" || ext == ".rom") g_bent.push_back({f, false, st.st_size});
+                if (ext == ".bin" || ext == ".nb0" || ext == ".img" || ext == ".rom" || ext == ".zip" || ext == ".cap") g_bent.push_back({f, false, st.st_size});
             }
         }
         closedir(d);
@@ -679,8 +784,11 @@ void DrawBrowser(float w, float h) {
     ImGui::TextWrapped("%s", g_bdir.c_str());
     ImGui::PopStyleColor();
     const float btn_h = fs * 2.6f, y_btn = h - btn_h - fs * 1.5f;
+    const bool prep_busy = PrepPoll();
+    const Prep prep = PrepGet();
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-    ImGui::BeginChild("##files", {0, y_btn - ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y}, false);
+    ImGui::BeginChild("##files", {0, y_btn - ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y - (prep.phase ? fs * 3.2f : 0)}, false);
+    ImGui::BeginDisabled(prep_busy);
     if (g_bscroll_top) { ImGui::SetScrollY(0); g_bscroll_top = false; }
     std::string go;  // folder to enter next frame ("..": up)
     const float row = fs * 2.2f;
@@ -693,16 +801,28 @@ void DrawBrowser(float w, float h) {
         ImGui::PushID(i);
         if (Tap(ImGui::Selectable(label, false, 0, {0, row}))) {
             if (e.dir) go = e.name;
+            else if (cewm::p525::IsFirmware(e.name)) StartPrepare(g_bdir + "/" + e.name);
             else { SetRom(g_bdir + "/" + e.name); g_view = View::Edit; }
         }
         ImGui::PopID();
     }
-    if (g_bent.empty()) ImGui::TextDisabled("Нет образов (.bin .nb0 .img .rom) и папок");
+    if (g_bent.empty()) ImGui::TextDisabled("Нет образов (.bin .nb0 .img .rom .zip .cap) и папок");
+    ImGui::EndDisabled();
     SwipeScroll();
     ImGui::EndChild();
     ImGui::PopStyleColor();
+    if (prep_busy) {
+        ImGui::TextUnformatted(prep.text.c_str());
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.28f, 1));
+        ImGui::ProgressBar(prep.pct / 100.0f, {-1, fs * 0.8f}, "");
+        ImGui::PopStyleColor();
+    } else if (prep.phase == 3) {
+        ImGui::TextColored({0.9f, 0.4f, 0.3f, 1}, "Ошибка: %s", prep.text.c_str());
+    }
     ImGui::SetCursorPosY(y_btn);
-    if (ImGui::Button("Назад", {-1, btn_h})) g_view = View::Edit;
+    ImGui::BeginDisabled(prep_busy);
+    if (ImGui::Button("Назад", {-1, btn_h})) { g_view = View::Edit; std::lock_guard<std::mutex> lk(g_prep_mu); g_prep = Prep(); }
+    ImGui::EndDisabled();
     if (go == "..") { const size_t i = g_bdir.rfind('/'); g_bdir = i == 0 || i == std::string::npos ? "/" : g_bdir.substr(0, i); ReadBrowseDir(); }
     else if (!go.empty()) { g_bdir += (g_bdir == "/" ? "" : "/") + go; ReadBrowseDir(); }
     ImGui::PopStyleVar(2);
@@ -730,9 +850,10 @@ void DrawCatalog(float w, float h) {
     const cewm::romdl::State st = cewm::romdl::Get();
     if (st.phase == 2) {  // downloaded: hand the image to the editor
         cewm::romdl::Reset();
-        SetRom(st.rom);
-        if (g_cat_pick >= 0 && !g_ed_touched) snprintf(g_ed_name, sizeof g_ed_name, "%s", CleanName((kCatalog[g_cat_pick].group ? std::string(kCatalog[g_cat_pick].device) + " " : std::string()) + kCatalog[g_cat_pick].system).c_str());
-        if (g_ed_label.empty() && !st.board.empty()) {  // an image the hash table does not know: the manifest says which board it is for
+        if (cewm::p525::IsFirmware(st.rom)) { StartPrepare(st.rom); OpenBrowser(); }  // a P525 CAP: made bootable on the way (the browser view shows it, then the editor opens)
+        else SetRom(st.rom);
+        if (!cewm::p525::IsFirmware(st.rom) && g_cat_pick >= 0 && !g_ed_touched) snprintf(g_ed_name, sizeof g_ed_name, "%s", CleanName((kCatalog[g_cat_pick].group ? std::string(kCatalog[g_cat_pick].device) + " " : std::string()) + kCatalog[g_cat_pick].system).c_str());
+        if (!cewm::p525::IsFirmware(st.rom) && g_ed_label.empty() && !st.board.empty()) {  // an image the hash table does not know: the manifest says which board it is for
             struct B { const char* id; int w, h; bool real; };
             static const B kBoards[] = {{"devemu", 240, 320, 0}, {"devemu_vga", 480, 640, 0}, {"devemu_wqvga", 240, 400, 0}, {"devemu_wvga", 480, 800, 0},
                                         {"simpad_sl4", 800, 600, 1}, {"ipaq_h31xx", 240, 320, 1}, {"ipaq_h36xx", 240, 320, 1}, {"ipaq_h3660_h3670", 240, 320, 1}, {"jornada_720", 640, 240, 1}};
@@ -741,12 +862,12 @@ void DrawCatalog(float w, float h) {
                 snprintf(g_ed.board, sizeof g_ed.board, "%s", b.id);
                 g_ed.fixed_w = b.w;
                 g_ed.orig_h = b.h;
-                if (b.real) { g_ed.fixed_h = b.h; g_ed.fill = false; g_ed.keep_w = true; g_ed.ga = false; }
+                if (b.real) { g_ed.fixed_h = b.h; g_ed.fill = false; g_ed.keep_w = true; g_ed.ga = true; }
                 g_ed_label = st.label;
                 TabletDefaults();
             }
         }
-        g_view = View::Edit;
+        if (!cewm::p525::IsFirmware(st.rom)) g_view = View::Edit;
     }
     const float btn_h = fs * 2.6f, y_btn = h - btn_h - fs * 1.5f;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
@@ -805,9 +926,18 @@ void DrawCatalog(float w, float h) {
     ImGui::End();
 }
 
+// The original-resolution option pins the guest to the ROM's own size.
+void ApplyOrigRes(Settings& s) {
+    if (!s.orig_res) return;
+    s.fixed_h = s.orig_h;
+    s.keep_w = true;
+    s.fill = false;
+}
+
 void RunVm(int i) {
     if (FitToDevice(g_vms[i].s)) WritePref(PrefPath(g_vms[i].name), g_vms[i].s);
     g_s = g_vms[i].s;
+    ApplyOrigRes(g_s);
     g_vm = g_vms[i].name;
     StartEmu();
     g_mode = Mode::Emu;
@@ -860,8 +990,9 @@ void DrawVmList() {
         ImGui::TextUnformatted(v.name.c_str());
         if (Tap(ImGui::Button("Настройки", {bw, 0}))) edit = i;
         ImGui::SameLine();
-        ImGui::BeginDisabled(!v.snap);
-        if (Tap(ImGui::Button(armed == i ? "Точно?" : "Сброс", {bw, 0}))) {
+        const bool p525 = !strcmp(v.s.board, "asus_mypal_p525");
+        ImGui::BeginDisabled(!v.snap && !p525);
+        if (Tap(ImGui::Button(armed == i ? "Точно?" : p525 ? "Сброс NAND" : "Сброс", {bw, 0}))) {
             if (armed == i) { reset = i; armed = -1; }
             else { armed = i; armed_at = SDL_GetTicks(); }
         }
@@ -875,7 +1006,11 @@ void DrawVmList() {
     }
     SwipeScroll();
     if (edit >= 0) OpenEditor(edit);
-    else if (reset >= 0) { DiscardStatesIn(VmDir(g_vms[reset].name)); ScanVms(); }
+    else if (reset >= 0) {
+        DiscardStatesIn(VmDir(g_vms[reset].name));
+        if (!strcmp(g_vms[reset].s.board, "asus_mypal_p525")) ResetNand(VmDir(g_vms[reset].name));
+        ScanVms();
+    }
     else if (run >= 0) RunVm(run);
 }
 
@@ -944,6 +1079,7 @@ void DrawEditGeneral() {
         {"ipaq_h36xx", "Compaq iPAQ H3600", 240, 320},
         {"ipaq_h3660_h3670", "Compaq iPAQ H3660/H3670", 240, 320},
         {"jornada_720", "HP Jornada 720", 640, 240},
+        {"asus_mypal_p525", "ASUS P525 (Windows Mobile)", 240, 320},
     };
     const bool de = strncmp(g_ed.board, "devemu", 6) == 0;
     const char* cur = kModels[0].label;
@@ -954,14 +1090,16 @@ void DrawEditGeneral() {
         for (const Model& m : kModels) {
             const bool sel = m.label == cur;
             if (!DropItem(m.label, sel, m.w ? nullptr : "Рекомендуется") || sel) continue;
-            if (m.w) {  // a real device: its own board and screen, Guest Additions off, native size
+            if (m.w) {  // a real device: its own board and screen, Guest Additions on, native size
                 snprintf(g_ed.board, sizeof g_ed.board, "%s", m.board);
                 g_ed.fixed_w = m.w;
                 g_ed.orig_h = m.h;
                 g_ed.fixed_h = m.h;
                 g_ed.fill = false;
                 g_ed.keep_w = true;
-                g_ed.ga = false;
+                g_ed.ga = true;
+                g_ed.p525_keypad = false;
+                P525Defaults();
                 g_ed_label.clear();
                 TabletDefaults();
             } else if (g_ed.rom[0]) {
@@ -999,6 +1137,7 @@ void DrawEditFeatures() {
 
 // What the editor's settings add up to, computed with the layout code the guest view uses (shown above the bottom buttons on every tab).
 std::string GuestInfo() {
+    ApplyOrigRes(g_ed);
     std::swap(g_s, g_ed);
     const float dw = g_s.rot & 1 ? g_dispH : g_dispW, dh = g_s.rot & 1 ? g_dispW : g_dispH;
     const float n = EffScale(MakeLayout(dw, dh));
@@ -1012,6 +1151,7 @@ std::string GuestInfo() {
 
 void DrawEditScreen() {
     const float fs = ES();
+    ApplyOrigRes(g_ed);
     ImGui::TextUnformatted("Исходное разрешение ROM");
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
     // Common sizes (the four LCD classes of the Device Emulator board); the fields below take any other size.
@@ -1051,6 +1191,9 @@ void DrawEditScreen() {
         ImGui::EndCombo();
     }
     ImGui::Dummy({0, fs * 0.3f});
+    if (ImGui::Checkbox("Исходное разрешение", &g_ed.orig_res) && !g_ed.orig_res) g_ed.fixed_h = 0;  // off: the guest height follows the screen again
+    Hint("Гость работает в разрешении самого образа. Выключите, чтобы менять ширину, масштаб и заполнение экрана.");
+    ImGui::BeginDisabled(g_ed.orig_res);
     ImGui::Checkbox("Не менять ширину", &g_ed.keep_w);
     Hint("Некоторые образы Windows Mobile не любят смену ширины.");
     if (!g_ed.keep_w) {
@@ -1060,7 +1203,8 @@ void DrawEditScreen() {
     }
     ImGui::Dummy({0, fs * 0.3f});
     ImGui::Checkbox("На весь экран", &g_ed.fill);
-    if (g_ed.fixed_h > 0) {  // a warning, not a lock: the user may still try
+    ImGui::EndDisabled();
+    if (g_ed.fixed_h > 0 && !g_ed.orig_res) {  // a warning, not a lock: the user may still try
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.7f, 0.2f, 1));
         ImGui::TextWrapped("Внимание: этот образ рассчитан на разрешение %d x %d. Другая ширина, масштаб или заполнение экрана могут не работать.", g_ed.fixed_w, g_ed.fixed_h);
         ImGui::PopStyleColor();
@@ -1074,10 +1218,15 @@ void DrawEditScreen() {
     Slider("##top", &g_ed.top_px, 0, 400, "Отступ сверху %d px");
     ImGui::Dummy({0, fs * 0.3f});
     ImGui::Checkbox("Экранные кнопки", &g_ed.softkeys);
-    ImGui::BeginDisabled(!g_ed.softkeys || g_ed.fill);
+    ImGui::Checkbox("Клавиатура ASUS P525 (T9)", &g_ed.p525_keypad);
+    ImGui::BeginDisabled(!g_ed.p525_keypad);
+    ImGui::Checkbox("Тёмный фон клавиш T9", &g_ed.p525_keybg);
+    ImGui::EndDisabled();
+    Hint("Клавиши 0–9, *, #, две программные кнопки, вызов, отбой и пятипозиционный джойстик. Ввод текста обрабатывает сама Windows Mobile.");
+    ImGui::BeginDisabled(!g_ed.softkeys || g_ed.fill || g_ed.p525_keypad);
     Slider("##bar", &g_ed.bar_px, 60, 300, "Высота панели %d px");
     ImGui::EndDisabled();
-    ImGui::BeginDisabled(!g_ed.softkeys);
+    ImGui::BeginDisabled(!g_ed.softkeys || g_ed.p525_keypad);
     Slider("##bdy", &g_ed.btn_dy, -150, 150, "Сдвиг значков %d px");
     ImGui::EndDisabled();
 }
@@ -1200,8 +1349,8 @@ struct Guest {
         uint64_t hsh = 1469598103934665603ull;  // unchanged frame: skip the swizzle and the GL upload
         for (uint32_t p : px) hsh = (hsh ^ p) * 1099511628211ull;
         if (have_frame && hsh == last_hash) return;
-        last_hash = hsh;
         last_change = now;
+        last_hash = hsh;
         for (size_t i = 0; i < px.size(); ++i) {
             const uint32_t p = px[i];
             fb[i] = 0xff000000u | (p & 0xff00ff00u) | ((p & 0xffu) << 16) | ((p >> 16) & 0xffu);
@@ -1393,7 +1542,7 @@ void RotatePoint(Sint32& x, Sint32& y, int rot) {
 void DrawEmu(float W, float H) {
     const float n = EffScale(MakeLayout(W, H));
     const Layout L = MakeLayout(W, H);
-    const float ax = L.inset, aw = L.aw, ah = L.ah;
+    const float ax = L.inset + L.dx, aw = L.aw, ah = L.ah;
     float bar = L.bar, y_btn = L.y_btn;
     if (g_guest.w != g_gw || g_guest.h != g_gh) {
         if (!g_guest.tex || !g_guest.have_frame) g_guest.Alloc(g_gw, g_gh);
@@ -1411,9 +1560,16 @@ void DrawEmu(float W, float H) {
     ImGui::Begin("##emu", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground |
                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
-    const ImVec2 img_pos = {ax + (aw - iw) / 2, FillBar() ? L.top : L.top + (ah - ih) / 2};
+    float kx = ax, kw = aw;  // where the T9 keys go: under the plate when there is one
+    ImVec2 img_pos = {ax + (aw - iw) / 2, L.top};  // pinned to the top margin; spare height ends up above the keys
     // Fill mode: the buttons take whatever is left below the picture as it is actually drawn, and sit in the middle of that strip.
     if (FillBar()) { y_btn = img_pos.y + ih; bar = std::max(0.f, H - y_btn); }
+    if (L.pad > 0 && !Fill()) {  // plate hugs the picture, which sits one pad below the top margin
+        img_pos.y = L.top + L.pad;
+        const float bottom = img_pos.y + ih + L.pad;
+        kx = img_pos.x - L.pad - L.gapk / 2; kw = iw + 2 * L.pad + L.gapk;
+        ImGui::GetWindowDrawList()->AddRectFilled({img_pos.x - L.pad, img_pos.y - L.pad}, {img_pos.x + iw + L.pad, bottom}, IM_COL32(48, 50, 54, 255), 5.f);
+    }
     ImGui::SetCursorPos(img_pos);
     ImGui::Image((ImTextureID)(intptr_t)(g_scaler.tex ? g_scaler.tex : g_guest.tex), {iw, ih});
 
@@ -1455,7 +1611,9 @@ void DrawEmu(float W, float H) {
         }
     }
 
-    if (Soft()) {
+    if (g_s.p525_keypad) {
+        DrawP525Keypad(kx, y_btn, kw, bar, g_s.p525_keybg);
+    } else if (Soft()) {
         // HTC HD2 order. Windows virtual keys of the devemu keyboard: F3 (Call), RWIN (Home, untested), LWIN (Start), ESC (Back), F4 (End).
         enum Icon { Call, Home, Start, Back, End, Esc, Enter };
         struct Key { const char* label; uint8_t vk; Icon icon; } keys[] = {
@@ -1473,8 +1631,9 @@ void DrawEmu(float W, float H) {
             const ImVec2 p = ImGui::GetCursorScreenPos();
             ImGui::InvisibleButton(keys[i].label, {bw, bar});
             const bool act = ImGui::IsItemActive();
-            if (act && held != i) { held = i; cewm::EmuKey(keys[i].vk, false); }
-            else if (!act && held == i) { held = -1; cewm::EmuKey(keys[i].vk, true); }
+            if (act && held != i) { held = i; cewm::EmuKey(keys[i].vk, false); cewm::HapticTick(); }
+            else if (!act && held == i) {
+                held = -1; cewm::EmuKey(keys[i].vk, true); }
             // Bare icons on the black: no button chrome, a thin line between neighbours.
             const ImVec2 c = {p.x + bw / 2, p.y + bar / 2 + g_s.btn_dy};
             const float r = std::min(bw, bar) * 0.21f, t = std::max(2.f, r * 0.22f);
@@ -1562,6 +1721,8 @@ void ParseCli(int argc, char** argv) {
         else if (a == "--width") g_s.fixed_w = std::clamp(atoi(val()), 0, 1000);
         else if (a == "--top") g_s.top_px = std::clamp(atoi(val()), 0, 400);
         else if (a == "--softkeys") g_s.softkeys = true;
+        else if (a == "--p525-keypad") g_s.p525_keypad = true;
+        else if (a == "--p525-keybg") g_s.p525_keybg = true;
         else if (a == "--no-softkeys") g_s.softkeys = false;
         else if (a == "--board") snprintf(g_s.board, sizeof g_s.board, "%s", val());
         else if (a == "--win") {
@@ -1574,6 +1735,8 @@ void ParseCli(int argc, char** argv) {
         }
         else if (a == "--fixed-h") g_s.fixed_h = std::clamp(atoi(val()), 0, 1020);
         else if (a == "--ga") g_s.ga = true;
+        else if (a == "--jit") g_s.jit = true;
+        else if (a == "--no-resume") g_s.resume = false;
         else if (a == "--rot") g_s.rot = std::clamp(atoi(val()) / 90, 0, 3);
         else if (a == "--new") g_cli.open_new = true;
         else if (a == "--edit") g_cli.open_edit = val();
@@ -1601,7 +1764,7 @@ void ParseCli(int argc, char** argv) {
     }
 }
 
-// Saves the running machine (off the UI thread) at most every 60 s, or at once with `now`.
+// Saves the running machine (off the UI thread), at most every 60 s; called when the app goes to the background.
 void AutoSave(bool now) {
     static Uint32 last = 0;
     static std::atomic<bool> busy{false};
@@ -1619,6 +1782,7 @@ int main(int argc, char** argv) {
     if (!getenv("CEWM_STDERR")) {  // no terminal on the phone: the log of the last run goes next to the settings (cewm.log), unbuffered so a crash keeps it
         char lp[600];
         snprintf(lp, sizeof lp, "%s/cewm.log", ConfDir().c_str());
+        rename(lp, (std::string(lp) + ".prev").c_str());  // a crash is followed by a relaunch: keep the crashed run's log
         if (freopen(lp, "w", stderr)) setvbuf(stderr, nullptr, _IONBF, 0);
     }
     {  // debug switch for a device without a terminal: an empty file "debug" next to the settings adds the guest PC (every 2 s) to cewm.log
@@ -1632,16 +1796,23 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_DisplayMode dm;
     SDL_GetDesktopDisplayMode(0, &dm);
+    // --win sets both the SDL window and virtual display dimensions.
+    ParseCli(argc, argv);
     // Phone: fullscreen at the real display size. Laptop: a "virtual phone", i.e. the Note 17's 1080x2400 shown at 1/kVirtScale in a window,
     // so guest size, borders and soft-button bar come out exactly as on the device.
 #ifdef CEWM_ON_PHONE
     SDL_Window* win = SDL_CreateWindow("CE/WM", 0, 0, dm.w, dm.h, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
 #else
     SDL_Window* win = SDL_CreateWindow("CE/WM", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, kVirtW / kVirtScale,
-                                       kVirtH / kVirtScale, SDL_WINDOW_OPENGL);
+                                       kVirtH / kVirtScale, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
 #endif
     g_win = win;
     if (!win) { SDL_Log("window: %s", SDL_GetError()); return 1; }
+#ifndef CEWM_ON_PHONE
+    int window_w = 0, window_h = 0;
+    SDL_GetWindowSize(win, &window_w, &window_h);
+    fprintf(stderr, "window: %dx%d, virtual display %dx%d\n", window_w, window_h, kVirtW, kVirtH);
+#endif
     SDL_GLContext gl = SDL_GL_CreateContext(win);
     if (!gl) { SDL_Log("GL context: %s", SDL_GetError()); return 1; }
     SDL_GL_SetSwapInterval(1);
@@ -1667,7 +1838,6 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL2_InitForOpenGL(win, gl);
     ImGui_ImplOpenGL3_Init("#version 100");
     ScanVms();
-    ParseCli(argc, argv);
     if (g_cli.create) {
         OpenEditor(-1);
         SetRom(g_cli.create);
@@ -1711,6 +1881,15 @@ int main(int argc, char** argv) {
                 if (e.type == SDL_MOUSEMOTION) RotatePoint(e.motion.x, e.motion.y, g_s.rot);
                 else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) RotatePoint(e.button.x, e.button.y, g_s.rot);
             }
+            if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION || e.type == SDL_FINGERUP) {  // multi-touch for the T9 keys (the mouse only follows one finger)
+                Sint32 fx = (Sint32)(e.tfinger.x * g_dispW), fy = (Sint32)(e.tfinger.y * g_dispH);
+                if (g_mode == Mode::Emu && g_s.rot && g_dispW > 0) RotatePoint(fx, fy, g_s.rot);
+                const long long id = (long long)e.tfinger.fingerId;
+                auto it = std::find_if(g_p525_fingers.begin(), g_p525_fingers.end(), [&](auto& f) { return f.first == id; });
+                if (e.type == SDL_FINGERUP) { if (it != g_p525_fingers.end()) g_p525_fingers.erase(it); }
+                else if (it != g_p525_fingers.end()) it->second = {(float)fx, (float)fy};
+                else g_p525_fingers.push_back({id, {(float)fx, (float)fy}});
+            }
             ImGui_ImplSDL2_ProcessEvent(&e);
             if (e.type == SDL_QUIT) g_quit = true;
             // Aurora kills a closed app outright, so save whenever it leaves the foreground.
@@ -1752,7 +1931,6 @@ int main(int argc, char** argv) {
         }
         ImGui::NewFrame();
         cewm::PollWidgets();
-        AutoSave(false);
         if (g_resize_w > 0 && g_mode == Mode::Emu && g_guest.have_frame && !g_booting) {  // restored machine at an old size: switch it to the current one
             if (!g_resize_at) g_resize_at = SDL_GetTicks();
             else if (SDL_GetTicks() - g_resize_at > 2500) {

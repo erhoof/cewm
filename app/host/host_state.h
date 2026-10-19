@@ -10,6 +10,7 @@ struct HostState {
     std::atomic<bool> lcd_enabled{false};
     std::atomic<uint32_t> guest_w{0}, guest_h{0};
     std::atomic<bool> powered_down{false};
+    std::atomic<bool> calibrating{false};
     // Device stats, set by the Aurora frontend (later: real battery); the emulated battery follows them via BatteryWidget::PollDirty.
     std::atomic<int> battery_percent{100};
     std::atomic<bool> on_battery{false};

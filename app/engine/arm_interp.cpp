@@ -52,6 +52,7 @@ namespace Dynarmic::A32 { extern std::uint32_t g_pc_store_extra; }  // dynarmic 
 #ifndef CEWM_BLK_ENTRIES
 #define CEWM_BLK_ENTRIES 8192  // direct-mapped; power of two
 #endif
+extern uint64_t g_cewm_pc_filter[1024];  // port/trace_manager.cpp: one bit per (pc >> 1) & 0xFFFF that may carry a hook
 namespace cerfengine {
 
 using namespace cewm::alu;
@@ -67,8 +68,12 @@ uint64_t g_idle_hits = 0;
 static const bool kRegChk = getenv("CEWM_REGCHK") != nullptr;
 static const bool kNoBlock = getenv("CEWM_NOBLOCK") != nullptr;  // debug: single-step through Step() only
 static const bool kSysTrace = getenv("CEWM_SYSTRACE") != nullptr;
-static const bool kPcHooks = getenv("CEWM_PCHOOKS") != nullptr;  // trace-manager PC hooks (kernel debug text of some boards); looked up at block entries only
+bool g_pc_hooks_on = getenv("CEWM_PCHOOKS") != nullptr;
+static inline bool PcMayHaveHook(uint32_t pc) { const uint32_t h = (pc >> 1) & 0xFFFFu; return ::g_cewm_pc_filter[h >> 6] >> (h & 63) & 1; }
+#define kPcHooks g_pc_hooks_on  // trace-manager PC hooks (kernel debug text of some boards); looked up at block entries only
 static const bool kIdleSkip = getenv("CEWM_NOIDLESKIP") == nullptr;  // see Impl::BuildBlock: the WM idle spin turns into a host-side wait
+static const bool kBlkStats = getenv("CEWM_BLKSTATS") != nullptr;
+static uint64_t g_why[6];  // block rebuild causes: empty slot, other va, thumb flag, other phys page, empty block, code changed
 uint64_t g_blk_runs = 0, g_blk_chained = 0, g_blk_slow = 0, g_blk_builds = 0, g_blk_ops = 0, g_blk_step = 0;
 
 struct ArmInterp::Impl {
@@ -98,6 +103,10 @@ struct ArmInterp::Impl {
     void RefreshCtx() {
         const bool user = st.cpsr.bits.mode == ArmMode::kUser;
         const uint32_t eff = mmu.State()->effective_control_register.word;
+        // SCTLR can also be synchronized by the run loop or exception entry.
+        // Chained entries bypass the fetch cache's SCTLR check, so invalidate
+        // their validation whenever the effective regime changes.
+        if (eff != t_eff) ++code_gen;
         if (epoch != t_epoch || user != t_user || eff != t_eff) { t_epoch = epoch; t_user = user; t_eff = eff; ++dctx; }
     }
     static constexpr uint32_t kDataEntries = 256;
@@ -107,10 +116,15 @@ struct ArmInterp::Impl {
     // kFirstLs + {0: LDR, 1: LDRB, 2: STR, 3: STRB, 4: LDR literal, 5: LDRB literal}: immediate-offset single transfers (pre-index, no writeback).
     // kDpImm..kDpShReg are the generic data-processing kinds (PC destination, odd forms); kFirstDp + form * 32 + S * 16 + opcode are the
     // specialised ones RunBlock dispatches straight to a DpOp instantiation.
-    enum BlockKind : uint8_t { kDpImm, kDpReg, kDpShReg, kSingle, kBranch, kMul, kBlock, kOther, kFirstDp, kFirstLs = kFirstDp + 96 };
+    enum BlockKind : uint8_t {
+        kDpImm, kDpReg, kDpShReg, kSingle, kBranch, kMul, kBlock, kOther,
+        kFirstDp, kFirstDpPlain = kFirstDp + 96, kFirstLs = kFirstDpPlain + 32
+    };
     static constexpr uint32_t kBlkMax = 32, kBlkEntries = CEWM_BLK_ENTRIES;
+    static_assert(kBlkMax <= 0xFFFFu / 4u, "Sequential PC offsets must fit in 16 bits");
     // Compact copy of the operand fields the fast handlers use (16 bytes instead of reaching into the 152-byte DecodedInsn):
     // imm = DP immediate or the signed load/store offset, pcv = value of PC as an operand (address + 8 ARM / + 4 Thumb),
+    // For kBlock, imm/pcv instead hold the start-address/writeback deltas from the base register.
     // fl: bit0 U, bit1 P, bit2 W, bit3 L (link / load).
     struct Cop { uint8_t rd, rn, rm, rs, n, fl, pad0, pad1; uint32_t imm; uint32_t pcv; };
     struct Block {
@@ -122,9 +136,9 @@ struct ArmInterp::Impl {
         uint32_t succ_next = 0;
         bool idle = false;                      // spin-wait loop on RAM (see BuildBlock)
         uint8_t code[kBlkMax * 4];
-        uint8_t kind[kBlkMax], len[kBlkMax];
-        uint32_t aux[kBlkMax];                  // per op: absolute address of a literal load (see kFirstLs)
-        uint32_t meta[kBlkMax];                 // per op: kind | cond << 8 | offset in block << 16 | length << 24 (one load per dispatch)
+        uint8_t kind[kBlkMax];
+        uint32_t aux[kBlkMax];                  // literal/branch target, or eligible LDM/STM byte count (zero means fallback)
+        uint32_t meta[kBlkMax];                 // per op: kind | cond << 8 | sequential next-PC offset << 16
         Cop* cop = nullptr;                     // n compact ops, same index as d
         DecodedInsn* d = nullptr;               // exactly n ops (blocks average ~4 of kBlkMax, so a fixed array wasted ~5 KB of cache per block)
         uint32_t cap = 0;
@@ -139,7 +153,7 @@ struct ArmInterp::Impl {
     uint32_t code_gen = 1;
     Block* last_blk = nullptr;
     // Adv = false: RunBlock keeps PC in a local and writes R15 only at block end / on redirects, so the fast handlers skip Next(d).
-    template <bool Adv = true> bool FastBlockTransfer(const DecodedInsn& d);
+    template <bool Adv = true> bool FastBlockTransfer(const DecodedInsn& d, const Cop& c, uint32_t bytes);
     template <int F, bool S, int OP, bool Adv = false> bool DpOp(const Cop& c);
     template <bool L, bool WORD, bool LIT> bool LsImm(const Cop& c, uint32_t aux);
     template <bool L, bool WORD> bool LsImmWb(const Cop& c);
@@ -179,6 +193,8 @@ struct ArmInterp::Impl {
     template <bool Adv = true> bool FastSingle(const DecodedInsn& d);
     void DataProcessing(const DecodedInsn& d);
     void Multiply(const DecodedInsn& d);
+    void HalfwordMultiply(const DecodedInsn& d);  // ARMv5TE DSP: SMLAxy, SMLAWy, SMULWy, SMLALxy, SMULxy
+    void SaturatingArith(const DecodedInsn& d);   // QADD, QSUB, QDADD, QDSUB
     void Branch(const DecodedInsn& d);
     void MrsMsr(const DecodedInsn& d);
     void MsrWrite(const DecodedInsn& d, uint32_t value);
@@ -244,17 +260,15 @@ bool ArmInterp::Impl::FastSingle(const DecodedInsn& d) {
 // LDM/STM (including PUSH/POP) on plain memory within one page. Anything else (S bit, PC in the list, base in the list with
 // writeback, unaligned, MMIO, page crossing, faults) returns false before changing state and runs through upstream's BlockTransfer.
 template <bool Adv>
-bool ArmInterp::Impl::FastBlockTransfer(const DecodedInsn& d) {
+bool ArmInterp::Impl::FastBlockTransfer(const DecodedInsn& d, const Cop& c, uint32_t bytes) {
+    // BuildBlock checks instruction-only restrictions and counts the registers.
+    // Zero marks a form that must use the routed executor.
+    if (bytes == 0u) return false;
     const uint32_t list = d.register_list;
-    if (d.s || d.rn == 15u || (list & 0x8000u) || list == 0u) return false;
-    if (d.w && (list >> d.rn & 1u)) return false;
-    const uint32_t cnt = static_cast<uint32_t>(__builtin_popcount(list));
     const uint32_t base = R(d.rn);
     if (base & 3u) return false;
-    uint32_t start;
-    if (d.u) start = d.p ? base + 4u : base;
-    else     start = d.p ? base - 4u * cnt : base - 4u * cnt + 4u;
-    const uint32_t last = start + 4u * (cnt - 1u);
+    const uint32_t start = base + c.imm;
+    const uint32_t last = start + bytes - 4u;
     if ((start >> 12) != (last >> 12)) return false;
     uint8_t* host = DataLookupFast(start, !d.l);
     if (host == nullptr) return false;
@@ -269,14 +283,15 @@ bool ArmInterp::Impl::FastBlockTransfer(const DecodedInsn& d) {
             host += 4;
         }
     }
-    if (d.w) R(d.rn) = d.u ? base + 4u * cnt : base - 4u * cnt;
+    if (d.w) R(d.rn) = base + c.pcv;
     if constexpr (Adv) Next(d);
     return true;
 }
 
 // Data processing with a non-PC destination (the bulk of it), one instantiation per (operand form, S, opcode) so a block's op kind selects
 // straight-line code: no opcode switch, no S/rd tests. Operand carry is only worked out when flags are set.
-// F: 0 = immediate, 1 = register with immediate shift, 2 = register-shifted register. Opcodes: 0 AND 1 EOR 2 SUB 3 RSB 4 ADD 5 ADC 6 SBC
+// F: 0 = immediate, 1 = register with immediate shift, 2 = register-shifted register, 3 = unshifted register.
+// Opcodes: 0 AND 1 EOR 2 SUB 3 RSB 4 ADD 5 ADC 6 SBC
 // 7 RSC 8 TST 9 TEQ 10 CMP 11 CMN 12 ORR 13 MOV 14 BIC 15 MVN. Always returns true (BuildBlock only picks these kinds for valid forms).
 template <int F, bool S, int OP, bool Adv>
 bool ArmInterp::Impl::DpOp(const Cop& c) {
@@ -286,12 +301,14 @@ bool ArmInterp::Impl::DpOp(const Cop& c) {
         b = c.imm;
         if constexpr (S) { if (c.rs != 0u) sc = b >> 31; }  // rotated immediate: carry is bit 31 (see DataProcessing)
     } else if constexpr (F == 1) {
-        const uint32_t v = RdC(c, c.rm);
-        if (c.n == kSrLsl && c.rs == 0u) b = v;
-        else { const Shifted sh = ShiftBy(c.n, v, c.rs, st.cf); b = sh.v; sc = sh.c; }
-    } else {
+        const Shifted sh = ShiftBy(c.n, RdC(c, c.rm), c.rs, st.cf);
+        b = sh.v; sc = sh.c;
+    } else if constexpr (F == 2) {
         const Shifted sh = ShiftBy(c.n, R(c.rm), R(c.rs) & 0xFFu, st.cf);
         b = sh.v; sc = sh.c;
+    } else {
+        // BuildBlock has already established LSL #0: preserve shifter carry.
+        b = RdC(c, c.rm);
     }
     const uint32_t a = (OP == 13 || OP == 15) ? 0u : RdC(c, c.rn);
     uint32_t r;
@@ -453,6 +470,41 @@ void ArmInterp::Impl::Multiply(const DecodedInsn& d) {
     Next(d);
 }
 
+// Decoder fields: op1 = row (0 SMLAxy, 1 SMLAWy/SMULWy, 2 SMLALxy, 3 SMULxy), n = x (Rn half), u = y (Rm half); row 1 has s = 1 for SMULWy.
+// rd = Rd (RdHi for SMLALxy), rs = Ra (RdLo), rm = Rm (bits 11:8), rn = Rn (bits 3:0).
+void ArmInterp::Impl::HalfwordMultiply(const DecodedInsn& d) {
+    const uint32_t vn = R(d.rn), vm = R(d.rm);
+    const int32_t hy = static_cast<int16_t>(d.u ? vm >> 16 : vm);
+    auto setq = [&](int64_t sum) { if (sum != static_cast<int32_t>(sum)) st.cpsr.bits.saturation = 1; };
+    if (d.op1 == 1u) {
+        const int64_t val = (static_cast<int64_t>(static_cast<int32_t>(vn)) * hy) >> 16;
+        if (d.s) { R(d.rd) = static_cast<uint32_t>(val); }
+        else { const int64_t sum = val + static_cast<int32_t>(R(d.rs)); setq(sum); R(d.rd) = static_cast<uint32_t>(sum); }
+    } else {
+        const int32_t prod = static_cast<int16_t>(d.n ? vn >> 16 : vn) * hy;
+        if (d.op1 == 0u) { const int64_t sum = static_cast<int64_t>(prod) + static_cast<int32_t>(R(d.rs)); setq(sum); R(d.rd) = static_cast<uint32_t>(sum); }
+        else if (d.op1 == 2u) {
+            const uint64_t acc = ((static_cast<uint64_t>(R(d.rd)) << 32) | R(d.rs)) + static_cast<uint64_t>(static_cast<int64_t>(prod));
+            R(d.rs) = static_cast<uint32_t>(acc);
+            R(d.rd) = static_cast<uint32_t>(acc >> 32);
+        } else R(d.rd) = static_cast<uint32_t>(prod);
+    }
+    Next(d);
+}
+
+void ArmInterp::Impl::SaturatingArith(const DecodedInsn& d) {
+    auto sat = [&](int64_t v) -> int64_t {
+        if (v > INT32_MAX) { st.cpsr.bits.saturation = 1; return INT32_MAX; }
+        if (v < INT32_MIN) { st.cpsr.bits.saturation = 1; return INT32_MIN; }
+        return v;
+    };
+    const int64_t a = static_cast<int32_t>(R(d.rm));
+    int64_t b = static_cast<int32_t>(R(d.rn));
+    if (d.op1 >= 2u) b = sat(b * 2);
+    R(d.rd) = static_cast<uint32_t>(sat((d.op1 & 1u) ? a - b : a + b));
+    Next(d);
+}
+
 void ArmInterp::Impl::Branch(const DecodedInsn& d) {
     const uint32_t pc = d.guest_address;
     if (d.place_fn == &PlaceBranch) {
@@ -520,8 +572,9 @@ void ArmInterp::Impl::Wfi(const DecodedInsn& d) {
 
 // MRC/MCR through ArmSystemHost::ArmCoprocessor; action semantics mirror upstream's place_coproc_register_transfer.cpp.
 void ArmInterp::Impl::CoprocRegTransfer(const DecodedInsn& d) {
-    if (d.cp_num == 10u || d.cp_num == 11u || d.cp_num == 14u) {  // shortcut: no VFP/debug coprocessor modelled
-        if (d.cp_num == 14u && cfg.arch_v6) e.Halt(HaltReason::kUnimplemented, "ArmInterp: cp14 access at 0x%08X", d.guest_address);
+    // CP14 also carries XScale clock/power controls; let the selected SoC
+    // provider decide these accesses (including PXA idle), just like CP15.
+    if (d.cp_num == 10u || d.cp_num == 11u) {  // no VFP coprocessor modelled
         Undef(d);
         return;
     }
@@ -671,6 +724,13 @@ void ArmInterp::Impl::ExecDecoded(const DecodedInsn& d) {
     }
     else if (f == &PlaceBranch || f == &PlaceBx || f == &PlaceBlxReg || f == &PlaceThumbBlPrefix || f == &PlaceThumbBlSuffix) Branch(d);
     else if (f == &PlaceMultiply) Multiply(d);
+    else if (f == &PlaceHalfwordMultiply) HalfwordMultiply(d);
+    else if (f == &PlaceSaturatingArith) SaturatingArith(d);
+    else if (f == &PlaceArmBlxImm) {  // BLX <imm>: call into Thumb; the decoder's offset already includes the H bit
+        R(14) = d.guest_address + 4u;
+        st.cpsr.bits.thumb_mode = 1;
+        R(15) = d.guest_address + 8u + static_cast<uint32_t>(d.offset);
+    }
     else if (f == &PlaceMRSorMSR) MrsMsr(d);
     else if (f == &PlaceMSRImmediate) {
         const uint32_t imm8 = d.immediate & 0xFFu, rot = ((d.immediate >> 8) & 0xFu) * 2u;
@@ -694,6 +754,7 @@ void ArmInterp::Impl::BuildBlock(Block& b, uint32_t pc, const uint8_t* host, boo
     const uint32_t page_left = 0x1000u - (pc & 0xFFFu);
     uint32_t off = 0;
     while (b.n < kBlkMax) {
+        if (b.n && kPcHooks && PcMayHaveHook(pc + off) && e.Host().HasPcTrace(pc + off)) break;
         const uint32_t remain = page_left - off;
         uint32_t raw, len;
         if (thumb) {
@@ -719,13 +780,18 @@ void ArmInterp::Impl::BuildBlock(Block& b, uint32_t pc, const uint8_t* host, boo
         if (f == &PlaceDataProcessing) kind = kDpImm;
         else if (f == &PlaceDataProcessingReg) kind = kDpReg;
         else if (f == &PlaceDataProcessingShiftedReg) kind = kDpShReg;
-        if (kind <= kDpShReg && d.op1 < 16u && (d.op1 >= 8u && d.op1 <= 11u ? d.s != 0u : d.rd != 15u))  // fast form: specialised kind
-            kind = static_cast<uint8_t>(kFirstDp + (kind - kDpImm) * 32u + (d.s ? 16u : 0u) + d.op1);
-        else if (f == &PlaceSingleDataTransfer) kind = kSingle;
+        if (kind <= kDpShReg && d.op1 < 16u && (d.op1 >= 8u && d.op1 <= 11u ? d.s != 0u : d.rd != 15u)) {  // fast form: specialised kind
+            const uint32_t form = kind == kDpReg && d.n == kSrLsl && d.rs == 0u ? 3u : kind - kDpImm;
+            kind = static_cast<uint8_t>(kFirstDp + form * 32u + (d.s ? 16u : 0u) + d.op1);
+        } else if (f == &PlaceSingleDataTransfer) kind = kSingle;
         else if (f == &PlaceBranch) kind = kBranch;
         else if (f == &PlaceMultiply) kind = kMul;
         else if (f == &PlaceBlockDataTransfer) kind = kBlock;
         b.aux[b.n] = 0;
+        if (kind == kBlock && !d.s && d.rn != 15u && d.register_list != 0u && !(d.register_list & 0x8000u) &&
+            !(d.w && (d.register_list >> d.rn & 1u))) {
+            b.aux[b.n] = 4u * static_cast<uint32_t>(__builtin_popcount(d.register_list));
+        }
         if (kind == kSingle && !d.unpriv && d.rd != 15u && d.rn != 15u && d.n && !(d.p && !d.w))
             kind = static_cast<uint8_t>(kFirstLs + 7u + (d.l ? 0u : 2u) + (d.s ? 1u : 0u));  // writeback / post-index
         else if (kind == kSingle && !d.unpriv && d.rd != 15u && d.n && d.p && !d.w) {
@@ -746,15 +812,14 @@ void ArmInterp::Impl::BuildBlock(Block& b, uint32_t pc, const uint8_t* host, boo
         const bool terminal = d.r15_modified || d.is_exception_return || d.context_sync || f == &PlaceSvc || f == &PlaceMRSorMSR ||
                               f == &PlaceMSRImmediate || f == &PlaceCoprocRegisterTransfer || f == &PlaceCoprocDataOperation ||
                               f == &PlaceCoprocDataTransfer || f == &PlaceWfi || f == &PlaceBx || f == &PlaceBlxReg;
-        std::memcpy(b.code + off, host + off, len);
         b.kind[b.n] = kind;
-        b.len[b.n] = static_cast<uint8_t>(len);
-        b.meta[b.n] = kind | (d.cond << 8) | (off << 16) | (len << 24);
+        b.meta[b.n] = kind | (d.cond << 8) | ((off + len) << 16);
         ++b.n;
         off += len;
         if (terminal) break;
     }
     b.span = off;
+    if (off) std::memcpy(b.code, host, off);
     if (b.n > b.cap) { delete[] b.d; delete[] b.cop; b.cap = (b.n + 1u) & ~1u; b.d = new DecodedInsn[b.cap]; b.cop = new Cop[b.cap]; }
     if (b.n) std::memcpy(b.d, scratch, b.n * sizeof(DecodedInsn));
     for (uint32_t k = 0; k < b.n; ++k) {
@@ -766,6 +831,12 @@ void ArmInterp::Impl::BuildBlock(Block& b, uint32_t pc, const uint8_t* host, boo
         c.pad0 = c.pad1 = 0;
         c.imm = (b.kind[k] == kDpImm || (b.kind[k] >= kFirstDp && b.kind[k] < kFirstDp + 32u)) ? x.immediate : static_cast<uint32_t>(x.offset);
         c.pcv = x.guest_address + (thumb ? 4u : 8u);
+        if (b.kind[k] == kBlock && b.aux[k] != 0u) {
+            const uint32_t bytes = b.aux[k];
+            // Resolve IA/IB/DA/DB once; unsigned deltas retain guest wraparound.
+            c.imm = x.u ? (x.p ? 4u : 0u) : (0u - bytes + (x.p ? 0u : 4u));
+            c.pcv = x.u ? bytes : 0u - bytes;
+        }
     }
     // Idle spin: ARM block of plain loads/compares ending in a conditional branch to its own start. WM's idle thread waits for an IRQ this way
     // (ldr r3,[flag]; cmp r3,#0; beq .-8); RunBlock turns it into a wait when the loads hit RAM, so it neither burns host CPU nor guest cycles.
@@ -776,7 +847,7 @@ void ArmInterp::Impl::BuildBlock(Block& b, uint32_t pc, const uint8_t* host, boo
         for (uint32_t k = 0; k + 1 < b.n && ok; ++k) {
             const DecodedInsn& x = b.d[k];
             if (b.kind[k] == kSingle || (b.kind[k] >= kFirstLs && b.kind[k] <= kFirstLs + 5u)) ok = x.l && x.p && !x.w && x.rd != 15u && x.cond == 14u;
-            else if (b.kind[k] == kDpImm || b.kind[k] == kDpReg || (b.kind[k] >= kFirstDp && b.kind[k] < kFirstDp + 64u)) ok = x.s && x.op1 >= 8u && x.op1 <= 11u && x.cond == 14u;
+            else if (x.place_fn == &PlaceDataProcessing || x.place_fn == &PlaceDataProcessingReg) ok = x.s && x.op1 >= 8u && x.op1 <= 11u && x.cond == 14u;
             else ok = false;
         }
         b.idle = ok;
@@ -791,7 +862,7 @@ InterpStep ArmInterp::Impl::RunBlock(uint32_t* executed) {
     const bool user = st.cpsr.bits.mode == ArmMode::kUser;
     const bool thumb = Thumb();
     Block* b = nullptr;
-    if (kPcHooks && e.Host().HasPcTrace(pc)) e.Host().OnArmPcTrace(pc, st.gprs, st.cpsr.word);
+    if (kPcHooks && PcMayHaveHook(pc) && e.Host().HasPcTrace(pc)) e.Host().OnArmPcTrace(pc, st.gprs, ArmPackCpsr(st));
     if (kSysTrace && pc >= 0xF0000000u && pc < 0xF0010000u + 4u) { static std::map<std::pair<uint32_t, uint32_t>, unsigned> m; static unsigned tot; m[{pc, st.gprs[14]}]++; if (pc == 0xF000E3ECu) { static int k; if (k++ % 400 == 0) fprintf(stderr, "[SYS7] r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X\n", st.gprs[0], st.gprs[1], st.gprs[2], st.gprs[3], st.gprs[13], st.gprs[14]); } if (++tot % 3000 == 0) { fprintf(stderr, "[SYS] --- tot=%u\n", tot); for (auto& kv : m) fprintf(stderr, "[SYS] trap=%08X hid=%u mid=%u lr=%08X x%u\n", kv.first.first, (0x10000 - (kv.first.first & 0xFFFF)) / 4 / 256, ((0x10000 - (kv.first.first & 0xFFFF)) / 4) % 256, kv.first.second, kv.second); } }
     if (kNoBlock) { last_blk = nullptr; *executed = 1; return Step(); }
     if (kRegChk) {  // CEWM_REGCHK=1: rolling hash of the architectural state at every block entry; compare two builds at the same block counts
@@ -819,8 +890,10 @@ InterpStep ArmInterp::Impl::RunBlock(uint32_t* executed) {
             fc = {pc >> 12, host - (pc & 0xFFFu), eff, epoch, user, tr.LastExecPa() >> 12};
         }
         Block& e = blocks[((pc >> 1) * 2654435761u >> 12) & (kBlkEntries - 1)];
-        if (e.va != pc || e.thumb != thumb || e.pa_page != fc.pa_page || e.n == 0 || std::memcmp(host, e.code, e.span) != 0)
-            { BuildBlock(e, pc, host, thumb); ++g_blk_builds; }
+        if (e.va != pc || e.thumb != thumb || e.pa_page != fc.pa_page || e.n == 0 || std::memcmp(host, e.code, e.span) != 0) {
+            if (kBlkStats) { if (e.va == ~0u) ++g_why[0]; else if (e.va != pc) ++g_why[1]; else if (e.thumb != thumb) ++g_why[2]; else if (e.pa_page != fc.pa_page) ++g_why[3]; else if (e.n == 0) ++g_why[4]; else ++g_why[5]; }
+            BuildBlock(e, pc, host, thumb); ++g_blk_builds;
+        }
         if (e.n == 0) { last_blk = nullptr; ++g_blk_step; *executed = 1; return Step(); }
         e.gen = code_gen;
         e.user = user;
@@ -845,18 +918,19 @@ InterpStep ArmInterp::Impl::RunBlock(uint32_t* executed) {
     const uint32_t va0 = b->va;
 #define CEWM_DP_OPS(X, F, S) X(F, S, 0) X(F, S, 1) X(F, S, 2) X(F, S, 3) X(F, S, 4) X(F, S, 5) X(F, S, 6) X(F, S, 7) \
     X(F, S, 8) X(F, S, 9) X(F, S, 10) X(F, S, 11) X(F, S, 12) X(F, S, 13) X(F, S, 14) X(F, S, 15)
-#define CEWM_DP_ALL(X) CEWM_DP_OPS(X, 0, 0) CEWM_DP_OPS(X, 0, 1) CEWM_DP_OPS(X, 1, 0) CEWM_DP_OPS(X, 1, 1) CEWM_DP_OPS(X, 2, 0) CEWM_DP_OPS(X, 2, 1)
+#define CEWM_DP_ALL(X) CEWM_DP_OPS(X, 0, 0) CEWM_DP_OPS(X, 0, 1) CEWM_DP_OPS(X, 1, 0) CEWM_DP_OPS(X, 1, 1) CEWM_DP_OPS(X, 2, 0) CEWM_DP_OPS(X, 2, 1) CEWM_DP_OPS(X, 3, 0) CEWM_DP_OPS(X, 3, 1)
 #define CEWM_DP_ADDR(F, S, OP) &&h_dp_##F##_##S##_##OP,
     static const void* const kJump[] = {&&h_dpimm, &&h_dpreg, &&h_dpshreg, &&h_single, &&h_branch, &&h_mul, &&h_block, &&h_other,
                                         CEWM_DP_ALL(CEWM_DP_ADDR)
                                         &&h_ldr, &&h_ldrb, &&h_str, &&h_strb, &&h_ldrl, &&h_ldrbl, &&h_bra, &&h_ldrw, &&h_ldrbw, &&h_strw, &&h_strbw,
                                         &&h_lh_i, &&h_lh_r, &&h_sh_i, &&h_sh_r, &&h_lsb_i, &&h_lsb_r, &&h_lsh_i, &&h_lsh_r, &&h_bx};
+    static_assert(sizeof(kJump) / sizeof(kJump[0]) == kFirstLs + 20u);
+    static_assert(kFirstLs + 20u <= 256u, "Block kinds must fit in the metadata byte");
 #undef CEWM_DP_ADDR
 #define CEWM_DISPATCH()                                                                                                \
     do {                                                                                                               \
         m = b->meta[i];                                                                                                \
-        d = &b->d[i];                                                                                                  \
-        next = va0 + ((m >> 16) & 0xFFu) + (m >> 24);                                                                  \
+        next = va0 + (m >> 16);                                                                  \
         if (((m >> 8) & 0xFu) != 14u && !CondPasses((m >> 8) & 0xFu, st.nf, st.zf, st.cf, st.vf)) goto cond_failed;    \
         goto *kJump[m & 0xFFu];                                                                                        \
     } while (0)
@@ -868,9 +942,9 @@ InterpStep ArmInterp::Impl::RunBlock(uint32_t* executed) {
 // Generic executor: R15 = this op's address first; afterwards R15 != next means control left the straight line.
 #define CEWM_SLOW(call)                                                                                                \
     do {                                                                                                               \
+        d = &b->d[i];                                                                                                  \
         R(15) = d->guest_address;                                                                                      \
         call;                                                                                                          \
-        if (sctlr_pending && R(15) != next) { sctlr_pending = false; ++code_gen; mmu.SynchronizeSctlr(); }             \
         if (stop || R(15) != next) { ++i; goto done; }                                                                 \
         CEWM_FAST_NEXT();                                                                                              \
     } while (0)
@@ -883,7 +957,7 @@ h_dpshreg: CEWM_SLOW(DataProcessing(*d));
 #define CEWM_DP_LABEL(F, S, OP) h_dp_##F##_##S##_##OP: DpOp<F, S, OP, false>(b->cop[i]); CEWM_FAST_NEXT();
 CEWM_DP_ALL(CEWM_DP_LABEL)
 #undef CEWM_DP_LABEL
-h_single:  if (FastSingle<false>(*d)) CEWM_FAST_NEXT(); ram_only = false; CEWM_SLOW(ExecDecoded(*d));
+h_single:  d = &b->d[i]; if (FastSingle<false>(*d)) CEWM_FAST_NEXT(); ram_only = false; CEWM_SLOW(ExecDecoded(*d));
 #define CEWM_LS(label, call) label: if (call) CEWM_FAST_NEXT(); ram_only = false; CEWM_SLOW(ExecDecoded(*d));
 CEWM_LS(h_ldr,   (LsImm<true,  true,  false>(b->cop[i], 0)))
 CEWM_LS(h_ldrb,  (LsImm<true,  false, false>(b->cop[i], 0)))
@@ -912,7 +986,7 @@ h_bx:      { const uint32_t t = R(b->cop[i].rm);  // same as Branch() for PlaceB
              R(15) = t & ((t & 1u) ? ~1u : ~3u); ++i; goto done; }
 h_branch:  CEWM_SLOW(Branch(*d));
 h_mul:     CEWM_SLOW(Multiply(*d));
-h_block:   if (FastBlockTransfer<false>(*d)) CEWM_FAST_NEXT(); CEWM_SLOW(ExecDecoded(*d));
+h_block:   d = &b->d[i]; if (FastBlockTransfer<false>(*d, b->cop[i], b->aux[i])) CEWM_FAST_NEXT(); CEWM_SLOW(ExecDecoded(*d));
 h_other:   CEWM_SLOW(ExecDecoded(*d));
 #undef CEWM_SLOW
 #undef CEWM_DP_ALL
@@ -922,9 +996,17 @@ h_other:   CEWM_SLOW(ExecDecoded(*d));
 done_fall:
     R(15) = next;
 done:
+    // Fast B/BL/BX handlers must apply a pending control-register write just
+    // like the generic executor when control leaves the sequential stream.
+    if (sctlr_pending && R(15) != next) {
+        sctlr_pending = false;
+        ++code_gen;
+        mmu.SynchronizeSctlr();
+    }
     if (kIdleSkip && b->idle && ram_only && !stop && i == b->n && R(15) == b->va && !st.cpsr.bits.irq_disable) { ++g_idle_hits; chan.EnterIdle(); stop = true; }
     if (!stop && !st.cpsr.bits.irq_disable && chan.Level()) stop = true;  // a CPSR write may just have unmasked a pending IRQ (SA-1110 idle wakes with it pending): leave the slice so Run() takes it at once
     ++g_blk_runs;
+    if (kBlkStats && g_blk_runs % 20000000 == 0) fprintf(stderr, "[BLK] runs=%llu slow=%llu builds=%llu why: empty=%llu va=%llu thumb=%llu pa=%llu n0=%llu code=%llu\n", (unsigned long long)g_blk_runs, (unsigned long long)g_blk_slow, (unsigned long long)g_blk_builds, (unsigned long long)g_why[0], (unsigned long long)g_why[1], (unsigned long long)g_why[2], (unsigned long long)g_why[3], (unsigned long long)g_why[4], (unsigned long long)g_why[5]);
     g_blk_ops += i;
     *executed = i;
     last_blk = b;
@@ -1053,7 +1135,7 @@ struct DynCore final : Dynarmic::A32::UserCallbacks {
     std::vector<JEnt> journal;
     bool journaling = false, slow_seen = false;
     std::vector<uint8_t> code_vpages = std::vector<uint8_t>(1u << 20, 0);  // 4K virtual pages dynarmic has fetched code from
-    bool verify = false;
+    bool verify = false, verify_block = false;  // CEWM_VERIFY=2: compare whole compiled blocks, not single instructions
     uint64_t verified = 0, mismatches = 0;
 
     // cp15 c7,c5,1 (invalidate I-cache line by MVA) is run by the kernel in loops: handled by a direct callback instead of a full interpreter fallback.
@@ -1083,6 +1165,7 @@ struct DynCore final : Dynarmic::A32::UserCallbacks {
         conf.always_little_endian = true;
         conf.code_cache_size = 16u * 1024 * 1024;
         conf.enable_cycle_counting = true;
+        if (const char* o = getenv("CEWM_OPT")) conf.optimizations = static_cast<Dynarmic::OptimizationFlag>(strtoul(o, nullptr, 0));  // debug: bisect a JIT miscompile (0 = none, 0x3F = all safe)
         if (const char* a = getenv("CEWM_ASYNC")) conf.cewm_async_emit = *a == '1';  // arm64 backend only: emit blocks on a worker thread
         conf.coprocessors[15] = std::make_shared<Cp15>(this);
         SelectPid();
@@ -1315,9 +1398,10 @@ struct DynCore final : Dynarmic::A32::UserCallbacks {
         const uint64_t fb0 = fallbacks;
         ToJit();
         const uint32_t pc = I.st.gprs[15];
-        const Dynarmic::HaltReason hr = jit->Step();
+        const Dynarmic::HaltReason hr = verify_block ? jit->Run() : jit->Step();
         FromJit();
         journaling = false;
+        const uint32_t n_exec = verify_block ? std::max<uint32_t>(1u, I.st.guest_cycle_counter - saved.guest_cycle_counter) : 1u;
         const bool comparable = !slow_seen && fallbacks == fb0 && !Dynarmic::Has(hr, Dynarmic::HaltReason::MemoryAbort) && !prefetch_abort && I.jit_ev == 0;
         if (!comparable) {
             if (Dynarmic::Has(hr, Dynarmic::HaltReason::MemoryAbort)) {
@@ -1337,7 +1421,7 @@ struct DynCore final : Dynarmic::A32::UserCallbacks {
         const ArmCpuState after = I.st;
         for (auto it = journal.rbegin(); it != journal.rend(); ++it) std::memcpy(it->p, it->old, it->n);
         I.st = saved;
-        I.Step();
+        for (uint32_t k = 0; k < n_exec; ++k) { const bool br = I.Step().stop_batch; if (br || I.jit_ev != 0) break; }
         ++verified;
         bool bad = false;
         for (int r = 0; r < 16; ++r) if (after.gprs[r] != I.st.gprs[r]) bad = true;
@@ -1394,8 +1478,8 @@ struct DynCore final : Dynarmic::A32::UserCallbacks {
             DYNLOG("\n");
         }
         if ((++runs % 20000) == 0)
-            DYNLOG("[DYN] runs=%llu pc=%08X cpsr=%08X fallbacks=%llu flushes=%llu reval=%llu dropped=%llu cold_insns=%llu cycles=%u\n", (unsigned long long)runs, I.st.gprs[15],
-                    ArmPackCpsr(I.st), (unsigned long long)fallbacks, (unsigned long long)flushes, (unsigned long long)revalidations, (unsigned long long)dropped_pages, (unsigned long long)cold_insns, I.st.guest_cycle_counter);
+            DYNLOG("[DYN] runs=%llu pc=%08X cpsr=%08X irq=%d fallbacks=%llu flushes=%llu reval=%llu dropped=%llu cold_insns=%llu cycles=%u\n", (unsigned long long)runs, I.st.gprs[15],
+                    ArmPackCpsr(I.st), (int)I.chan.Level(), (unsigned long long)fallbacks, (unsigned long long)flushes, (unsigned long long)revalidations, (unsigned long long)dropped_pages, (unsigned long long)cold_insns, I.st.guest_cycle_counter);
         budget = cycles;
         SelectPid();
         ToJit();
@@ -1445,7 +1529,7 @@ ArmInterp::ArmInterp(Engine& engine) : impl_(new Impl(engine)) {
     if (const char* j = getenv("CEWM_JIT"); j && *j == '1') {
         impl_->dyn = new DynCore(*impl_);
         impl_->dyn_on = true;
-        if (const char* v = getenv("CEWM_VERIFY"); v && *v == '1') impl_->dyn->verify = true;
+        if (const char* v = getenv("CEWM_VERIFY"); v && (*v == '1' || *v == '2')) { impl_->dyn->verify = true; impl_->dyn->verify_block = *v == '2'; }
     }
 #endif
 }
