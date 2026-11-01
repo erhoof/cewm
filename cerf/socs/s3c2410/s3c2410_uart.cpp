@@ -8,6 +8,8 @@
 #include "../../peripherals/peripheral_dispatcher.h"
 #include "../../state/state_stream.h"
 #include "host_state.h"
+#include "ril_modem.h"
+#include "ril_android.h"
 #include "../fake_at_modem.h"
 #include "../../execution/guest_cycle_clock.h"
 #include "../irq_controller.h"
@@ -61,6 +63,13 @@ public:
     }
     void OnReady() override {
         emu_.Get<PeripheralDispatcher>().Register(this);
+        for (auto& ril : ril_) {
+            ril.dial = [this](const std::string& number) { const bool ok = cewm::AndroidRil("dial:" + number) == "ok"; if (ok) last_call_.clear(); return ok; };
+            ril.hangup = [] { return cewm::AndroidRil("hangup") == "ok"; };
+            ril.answer = [] { return cewm::AndroidRil("answer") == "ok"; };
+            ril.muted = [] { const auto value = cewm::AndroidRil("mute"); return value == "0" ? 0 : value == "1" ? 1 : -1; };
+            ril.control = [](const std::string& cmd) { return cewm::AndroidRil(cmd) == "ok"; };
+        }
         for (int u = 0; u < kUartCount; ++u) if (u != 1) emu_.Get<S3C2410SubSourceLevels>().Register(kMainUart[u], kSubRxd[u], this);
         if (modem_) {
             auto& clk = emu_.Get<GuestCycleClock>();
@@ -79,10 +88,31 @@ public:
     uint32_t ReadWord (uint32_t addr) override;
     void     WriteWord(uint32_t addr, uint32_t value) override;
 
-    /* Only the register file is machine state - tx_line_ is a host-side
-       console line accumulator, rebuilt as the guest writes. */
-    void SaveState(StateWriter& w) override    { w.WriteBytes("storage", storage_, sizeof(storage_)); }
-    void RestoreState(StateReader& r) override { r.ReadBytes("storage", storage_, sizeof(storage_)); }
+    // Save link subscriptions, but reconcile live calls from Android rather than replaying guest actions.
+    void SaveState(StateWriter& w) override {
+        w.WriteBytes("storage", storage_, sizeof(storage_));
+        w.Write("at_link", at_link_); w.Write("next_link", caif_next_link_);
+        w.Write("link_uart", link_uart_); w.Write("numeric", at_v0_); w.Write("no_echo", at_e0_);
+        unsigned sessions[256];
+        for (int i = 0; i < 256; ++i) sessions[i] = ril_[i].Session();
+        w.Write("ril_sessions", sessions);
+    }
+    void RestoreState(StateReader& r) override {
+        r.ReadBytes("storage", storage_, sizeof(storage_));
+        for (auto& ril : ril_) ril.Reset();
+        last_call_.clear();
+        for (auto& rx : rx_) rx.clear();
+        for (auto& frame : caif_buf_) frame.clear();
+        if (r.Remaining()) {
+            r.Read("at_link", at_link_); r.Read("next_link", caif_next_link_);
+            r.Read("link_uart", link_uart_); r.Read("numeric", at_v0_); r.Read("no_echo", at_e0_);
+            unsigned sessions[256]; r.Read("ril_sessions", sessions);
+            for (int i = 0; i < 256; ++i) {
+                if (link_uart_[i] != 0 && link_uart_[i] != 2) r.Reject("Invalid modem UART");
+                ril_[i].RestoreSession(sessions[i], i == at_link_);
+            }
+        }
+    }
 
 private:
     void     EmitTxByte(int uart_idx, uint8_t ch);
@@ -93,7 +123,9 @@ private:
     uint32_t    storage_ [kUartCount][kRegsPerUart] = {};
     std::string tx_line_ [kUartCount];
     std::deque<uint8_t> rx_[kUartCount];  /* host -> guest bytes (fake modem replies) */
-    std::string         at_line_[kUartCount];
+    cewm::RilModem     ril_[256];
+    std::string last_call_;
+    int link_uart_[256] = {};
     std::string         caif_buf_[kUartCount];
     uint8_t             caif_next_link_ = 0;
     bool                at_v0_[256] = {}, at_e0_[256] = {};
@@ -165,6 +197,19 @@ void S3C2410Uart::RadioPoll() {
     auto& clk = emu_.Get<GuestCycleClock>();
     clk.Arm(radio_ev_, clk.Cycles() + clk.NsToCycles(1000000000));
     if (!at_link_) return;
+    const std::string call = cewm::AndroidRil("poll");
+    if (!call.empty() && call != last_call_) {
+        last_call_ = call;
+        if (call.size() >= 4 && call[1] == ':' && call[3] == ':' && (call[0] == '0' || call[0] == '1' || call[0] == '2' || call[0] == '3' || call[0] == '4' || call[0] == '6') && (call[2] == '0' || call[2] == '1')) {
+            for (int link = 1; link < 256; ++link) {
+                const std::string report = ril_[link].CallEvent((cewm::RilModem::CallState)(call[0] - '0'), call.substr(4), call[2] - '0');
+                if (report.empty()) continue;
+                std::vector<uint8_t> frame = {(uint8_t)link, 0};
+                frame.insert(frame.end(), report.begin(), report.end());
+                CaifSend(link_uart_[link], frame);
+            }
+        }
+    }
     const int sig = RadioSignal();
     const int bars = RadioBars(sig), stat = sig < 0 ? 0 : 1;
     const int act = RadioAct();
@@ -201,21 +246,22 @@ void S3C2410Uart::CaifPayload(int u, const uint8_t* p, size_t n) {
         } else if (cmd == 0 && n >= 5) {      /* LINK_SETUP: echo type, prio/phy, endpoint, then the link id */
             r.insert(r.end(), p + 2, p + n);  /* VEI/DBG carry no extra parameters; others echo theirs */
             r.push_back(++caif_next_link_);
+            last_call_.clear();
             CaifSend(u, r);
         } else if (cmd == 1 && n >= 3) {      /* LINK_DESTROY */
             r.push_back(p[2]);
+            ril_[p[2]].Reset();
+            last_call_.clear();
+            at_v0_[p[2]] = at_e0_[p[2]] = false;
             CaifSend(u, r);
         }
         return;
     }
     if (p[1] != 0x00) return;  /* VEI control (flow, pins): ignore */
     at_link_ = p[0];
-    std::string& line = at_line_[u];
+    link_uart_[p[0]] = u;
     for (size_t i = 2; i < n; i++) {
-        if (p[i] != '\r') { if (line.size() < 256) line.push_back((char)p[i]); continue; }
-        if (trace_) fprintf(stderr, "[AT%d] link%u %s\n", u, p[0], line.c_str());
-        const std::string a = AtAnswer(line, at_v0_[p[0]], at_e0_[p[0]]);
-        line.clear();
+        const std::string a = ril_[p[0]].Feed(p[i], at_v0_[p[0]], at_e0_[p[0]], AtAnswer);
         if (a.empty()) continue;
         std::vector<uint8_t> r = {p[0], 0x00};
         r.insert(r.end(), a.begin(), a.end());

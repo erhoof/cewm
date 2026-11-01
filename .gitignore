@@ -322,3 +322,21 @@ cerf/tracing/*/**
 # Site assets synced from launcher/ and cerf/ by tools/build_site.py
 docs/website/content/assets/icons/
 docs/website/content/assets/img/
+
+# Local assistant state and session exports
+.claude/
+.codex/
+.agents/
+CLAUDE.md
+AGENTS.md
+*.jsonl
+
+*.md
+*.sh
+*.bat
+*.cmd
+*.apk
+*.rpm
+*.pem
+*.key
+agent_docs/
