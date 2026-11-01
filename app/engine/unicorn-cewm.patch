@@ -1,0 +1,252 @@
+--- a/include/uc_priv.h
++++ b/include/uc_priv.h
+@@ -270,6 +270,12 @@
+ typedef struct TCGContext TCGContext;
+ 
+ struct uc_struct {
++    bool cewm_configured, cewm_sctlr_pending;
++    uint64_t cewm_sctlr_value;
++    uint32_t cewm_sctlr_pc;
++    const void *cewm_sctlr_reg;
++    int cewm_pc_store_extra;
++    bool cewm_no_load_interwork;
+     uc_arch arch;
+     uc_mode mode;
+     uc_err errnum; // qemu/cpu-exec.c
+--- a/qemu/target/arm/translate.c
++++ b/qemu/target/arm/translate.c
+@@ -922,7 +922,7 @@
+  * in the ARM ARM which use the LoadWritePC() pseudocode function. */
+ static inline void store_reg_from_load(DisasContext *s, int reg, TCGv_i32 var)
+ {
+-    if (reg == 15 && ENABLE_ARCH_5) {
++    if (reg == 15 && ENABLE_ARCH_5 && !s->uc->cewm_no_load_interwork) {
+         gen_bx_excret(s, var);
+     } else {
+         store_reg(s, reg, var);
+@@ -2710,8 +2710,9 @@
+ static inline bool use_goto_tb(DisasContext *s, target_ulong dest)
+ {
+     struct uc_struct *uc = s->uc;
+-    return (s->base.tb->pc & TARGET_PAGE_MASK) == (dest & TARGET_PAGE_MASK) ||
+-           ((s->base.pc_next - 1) & TARGET_PAGE_MASK) == (dest & TARGET_PAGE_MASK);
++    return !uc->cewm_sctlr_pending &&
++           ((s->base.tb->pc & TARGET_PAGE_MASK) == (dest & TARGET_PAGE_MASK) ||
++            ((s->base.pc_next - 1) & TARGET_PAGE_MASK) == (dest & TARGET_PAGE_MASK));
+ }
+ 
+ static void gen_goto_ptr(TCGContext *tcg_ctx)
+@@ -9008,6 +9009,9 @@
+     addr = op_addr_rr_pre(s, a);
+ 
+     tmp = load_reg(s, a->rt);
++    if (a->rt == 15 && !s->thumb) {
++        tcg_gen_addi_i32(tcg_ctx, tmp, tmp, s->uc->cewm_pc_store_extra);
++    }
+     gen_aa32_st_i32(s, tmp, addr, mem_idx, mop | s->be_data);
+     disas_set_da_iss(s, mop, issinfo);
+     tcg_temp_free_i32(tcg_ctx, tmp);
+@@ -9158,6 +9162,9 @@
+     addr = op_addr_ri_pre(s, a);
+ 
+     tmp = load_reg(s, a->rt);
++    if (a->rt == 15 && !s->thumb) {
++        tcg_gen_addi_i32(tcg_ctx, tmp, tmp, s->uc->cewm_pc_store_extra);
++    }
+     gen_aa32_st_i32(s, tmp, addr, mem_idx, mop | s->be_data);
+     disas_set_da_iss(s, mop, issinfo);
+     tcg_temp_free_i32(tcg_ctx, tmp);
+@@ -10378,6 +10385,9 @@
+             tcg_temp_free_i32(tcg_ctx, tmp2);
+         } else {
+             tmp = load_reg(s, i);
++            if (i == 15 && !s->thumb) {
++                tcg_gen_addi_i32(tcg_ctx, tmp, tmp, s->uc->cewm_pc_store_extra);
++            }
+         }
+         gen_aa32_st32(s, tmp, addr, mem_idx);
+         tcg_temp_free_i32(tcg_ctx, tmp);
+--- a/qemu/target/arm/unicorn_arm.c
++++ b/qemu/target/arm/unicorn_arm.c
+@@ -179,6 +179,10 @@
+ 
+ static uc_err write_cp_reg(CPUARMState *env, uc_arm_cp_reg *cp)
+ {
++    if (cp->cp == 15 && cp->crn == 1) {
++        env->uc->cewm_sctlr_pending = false;
++        if (env->uc->cewm_configured) cp->val &= ~(SCTLR_TE | SCTLR_EE);
++    }
+     ARMCPU *cpu = ARM_CPU(env->uc->cpu);
+     int ns = cp->sec ? 0 : 1;
+     const ARMCPRegInfo *ri = get_arm_cp_reginfo(
+@@ -789,3 +793,45 @@
+     uc->context_restore = uc_arm_context_restore;
+     uc_common_init(uc);
+ }
++
++/* CEWM: use QEMU's system exception entry, including MMU fault registers. */
++UNICORN_EXPORT void cewm_uc_exception(uc_engine *uc, int exception)
++{
++    CPUARMState *env = uc->cpu->env_ptr;
++    uc->cpu->exception_index = exception;
++    env->exception.target_el = 1;
++    if (exception == EXCP_PREFETCH_ABORT) {
++        env->cp15.dfsr_ns = env->exception.fsr;
++    }
++    /* ARMv5 exception vectors are ARM state; TE/EE are reserved on this CPU. */
++    uint64_t control = env->cp15.sctlr_ns;
++    env->cp15.sctlr_ns &= ~(SCTLR_TE | SCTLR_EE);
++    arm_cpu_do_interrupt(uc->cpu);
++    env->cp15.sctlr_ns = control;
++}
++
++UNICORN_EXPORT int cewm_uc_take_idle(uc_engine *uc)
++{
++    int halted = uc->cpu->halted;
++    uc->cpu->halted = 0;
++    return halted;
++}
++
++UNICORN_EXPORT void cewm_uc_configure(uc_engine *uc, uint32_t midr,
++                                    uint32_t ctr, int pc_store_extra,
++                                    int load_interwork)
++{
++    ARMCPU *cpu = ARM_CPU(uc->cpu);
++    ARMCPRegInfo *id = (ARMCPRegInfo *)get_arm_cp_reginfo(
++        cpu->cp_regs, ENCODE_CP_REG(15, 0, 1, 0, 0, 0, 0));
++    ARMCPRegInfo *cache = (ARMCPRegInfo *)get_arm_cp_reginfo(
++        cpu->cp_regs, ENCODE_CP_REG(15, 0, 1, 0, 0, 0, 1));
++    id->resetvalue = midr;
++    cache->resetvalue = ctr;
++    cpu->midr = midr;
++    cpu->env.cp15.c0_cpuid = midr;
++    cpu->ctr = ctr;
++    uc->cewm_configured = true;
++    uc->cewm_pc_store_extra = pc_store_extra;
++    uc->cewm_no_load_interwork = !load_interwork;
++}
+--- a/qemu/include/exec/memory.h
++++ b/qemu/include/exec/memory.h
+@@ -302,6 +302,7 @@
+ 
+     /* The following fields should fit in a cache line */
+     bool ram;
++    bool cewm_rom;
+     bool subpage;
+     bool readonly; /* For RAM regions */
+     bool is_iommu;
+@@ -1134,7 +1135,7 @@
+ static inline bool memory_access_is_direct(MemoryRegion *mr, bool is_write)
+ {
+     if (is_write) {
+-        return memory_region_is_ram(mr) && !mr->readonly;
++        return memory_region_is_ram(mr) && !mr->readonly && !mr->cewm_rom;
+     } else {
+         return memory_region_is_ram(mr);
+     }
+--- a/qemu/accel/tcg/cputlb.c
++++ b/qemu/accel/tcg/cputlb.c
+@@ -840,7 +840,7 @@
+     target_ulong vaddr_page;
+     int asidx = cpu_asidx_from_attrs(cpu, attrs);
+     int wp_flags;
+-    bool is_ram;
++    bool is_ram, is_romd;
+ 
+     // assert_cpu_is_self(cpu);
+ 
+@@ -866,10 +866,10 @@
+         address |= TLB_BSWAP;
+     }
+ 
+-    is_ram = memory_region_is_ram(section->mr);
+-    // is_romd = memory_region_is_romd(section->mr);
+-
+-    if (is_ram) {
++    is_romd = section->mr->cewm_rom;
++    is_ram = memory_region_is_ram(section->mr) && !is_romd;
++
++    if (is_ram || is_romd) {
+         /* RAM and ROMD both have associated host memory. */
+         addend = (uintptr_t)memory_region_get_ram_ptr(section->mr) + xlat;
+     } else {
+@@ -900,9 +900,9 @@
+          * but of course reads to I/O must go through MMIO.
+          */
+         write_address |= TLB_MMIO;
+-        //if (!is_romd) {
++        if (!is_romd) {
+             address = write_address;
+-        //}
++        }
+     }
+ 
+     wp_flags = cpu_watchpoint_address_matches(cpu, vaddr_page,
+--- a/qemu/softmmu/memory.c
++++ b/qemu/softmmu/memory.c
+@@ -1569,3 +1569,30 @@
+     mr->destructor = memory_region_destructor_ram;
+     mr->ram_block = qemu_ram_alloc(uc, size, mr);
+ }
++
++/* CEWM NOR: direct executable reads, writes dispatched to the flash FSM. */
++static void cewm_rom_destructor(MemoryRegion *mr)
++{
++    g_free(mr->opaque);
++    memory_region_destructor_ram(mr);
++}
++
++UNICORN_EXPORT uc_err cewm_uc_map_rom(uc_engine *uc, uint64_t base, uint64_t size,
++                                     void *ptr, uc_cb_mmio_write_t write_cb,
++                                     void *opaque)
++{
++    uc_err err = uc_mem_map_ptr(uc, base, size, UC_PROT_ALL, ptr);
++    if (err != UC_ERR_OK) return err;
++    MemoryRegion *mr = uc->memory_mapping(uc, base);
++    mmio_cbs *cbs = g_new0(mmio_cbs, 1);
++    cbs->write = write_cb;
++    cbs->user_data_write = opaque;
++    cbs->ops.write = mmio_write_wrapper;
++    cbs->ops.endianness = DEVICE_NATIVE_ENDIAN;
++    mr->ops = &cbs->ops;
++    mr->opaque = cbs;
++    mr->cewm_rom = true;
++    mr->destructor = cewm_rom_destructor;
++    tlb_flush(uc->cpu);
++    return UC_ERR_OK;
++}
+--- a/qemu/target/arm/helper.c
++++ b/qemu/target/arm/helper.c
+@@ -4305,6 +4305,17 @@
+                         uint64_t value)
+ {
+     ARMCPU *cpu = env_archcpu(env);
++    struct uc_struct *uc = env->uc;
++    if (uc->cewm_configured) value &= ~(SCTLR_TE | SCTLR_EE);
++    if (uc->cewm_configured && ((raw_read(env, ri) ^ value) & SCTLR_M)) {
++        /* Device Emulator's MMU trampoline runs from prefetched instructions. */
++        uc->cewm_sctlr_pending = true;
++        uc->cewm_sctlr_value = value;
++        uc->cewm_sctlr_pc = env->regs[15];
++        uc->cewm_sctlr_reg = ri;
++        return;
++    }
++    uc->cewm_sctlr_pending = false;
+ 
+     if (raw_read(env, ri) == value) {
+         /* Skip the TLB flush if nothing actually changed; Linux likes
+@@ -11807,6 +11818,14 @@
+ void cpu_get_tb_cpu_state(CPUARMState *env, target_ulong *pc,
+                           target_ulong *cs_base, uint32_t *pflags)
+ {
++    struct uc_struct *uc = env->uc;
++    /* shortcut: same 64-byte prefetch window as CE's core; refine if another ROM needs it. */
++    if (uc->cewm_sctlr_pending && (uint32_t)(env->regs[15] - uc->cewm_sctlr_pc) >= 64) {
++        uc->cewm_sctlr_pending = false;
++        raw_write(env, uc->cewm_sctlr_reg, uc->cewm_sctlr_value);
++        tlb_flush(env_cpu(env));
++        arm_rebuild_hflags(env);
++    }
+     uint32_t flags = env->hflags;
+     uint32_t pstate_for_ss;
+ 

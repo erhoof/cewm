@@ -24,10 +24,17 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <algorithm>
 
 namespace {
 // Presentation and Widget sections are not saved: the frame is redrawn by the guest, the battery follows host state.
 constexpr StateSection kOrder[] = {StateSection::Cpu, StateSection::Mmu, StateSection::Ram, StateSection::Flash, StateSection::Periph, StateSection::Reset};
+constexpr uint32_t kNotificationLedBase = 0x500FFFD0u;
+uint32_t LayoutSig(const std::vector<Peripheral*>& periphs) {
+    uint32_t sig = static_cast<uint32_t>(periphs.size());
+    for (const Peripheral* p : periphs) sig = sig * 2654435761u + p->MmioBase();
+    return sig;
+}
 std::wstring Wide(const std::string& s) { return std::wstring(s.begin(), s.end()); }
 }  // namespace
 
@@ -43,10 +50,7 @@ bool Hibernation::DefaultStateExists() const {
 }
 
 uint32_t Hibernation::PeripheralLayoutSig() const {
-    const auto periphs = emu_.Get<PeripheralDispatcher>().RegisteredPeripherals();
-    uint32_t sig = static_cast<uint32_t>(periphs.size());
-    for (const Peripheral* p : periphs) sig = sig * 2654435761u + p->MmioBase();
-    return sig;
+    return LayoutSig(emu_.Get<PeripheralDispatcher>().RegisteredPeripherals());
 }
 
 StateImageHeader Hibernation::LiveHeader() const {
@@ -112,7 +116,12 @@ void Hibernation::ReadHeader(StateReader& r) {
     r.Read("guest_additions", saved.guest_additions);
     const StateImageHeader live = LiveHeader();
     if (saved.rom_entry_va != live.rom_entry_va || saved.rom_total_bytes != live.rom_total_bytes) throw StateImageRejected("the image is for a different ROM");
-    if (saved.periph_layout_sig != live.periph_layout_sig) throw StateImageRejected("the image has a different peripheral set");
+    if (saved.periph_layout_sig != live.periph_layout_sig) {
+        // Older CEWM builds omitted the notification LED; keep their saved machines usable.
+        auto legacy = emu_.Get<PeripheralDispatcher>().RegisteredPeripherals();
+        std::erase_if(legacy, [](Peripheral* p) { return p->MmioBase() == kNotificationLedBase; });
+        if (saved.periph_layout_sig != LayoutSig(legacy)) throw StateImageRejected("the image has a different peripheral set");
+    }
     if (saved.guest_additions != live.guest_additions) throw StateImageRejected("guest additions differ");
 }
 
@@ -120,8 +129,11 @@ void Hibernation::RestorePeripherals(StateReader& r) {
     const auto periphs = emu_.Get<PeripheralDispatcher>().RegisteredPeripherals();
     uint32_t n = 0;
     r.Read("periph_count", n);
-    if (n != periphs.size()) r.Reject("the image has %u peripherals, this build has %zu", n, periphs.size());
+    const bool legacy_led = n + 1u == periphs.size() &&
+        std::any_of(periphs.begin(), periphs.end(), [](Peripheral* p) { return p->MmioBase() == kNotificationLedBase; });
+    if (n != periphs.size() && !legacy_led) r.Reject("the image has %u peripherals, this build has %zu", n, periphs.size());
     for (Peripheral* p : periphs) {
+        if (legacy_led && p->MmioBase() == kNotificationLedBase) continue;
         const uint32_t base = r.EnterFrame();
         if (base != p->MmioBase()) r.Reject("the image has peripheral 0x%08X where this build has 0x%08X", base, p->MmioBase());
         p->RestoreState(r);

@@ -1,0 +1,28 @@
+# Third-party notices
+
+CE/WM port and application changes: Copyright (c) 2026 Pavel Bibichenko.
+The Unicorn-enabled application is distributed under GNU GPL version 2;
+see [LICENSE](LICENSE). Included components retain their copyright notices
+and their original license terms.
+
+| Component | License / notices | Source |
+| --- | --- | --- |
+| CERF | MIT, `cerf/LICENSE` | https://github.com/gweslab/cerf |
+| libCerfEngine | See `cerf/libCerfEngine/LICENSE` | https://github.com/gweslab/libCerfEngine |
+| libservicelocator | See its included license | https://github.com/dz333n/libservicelocator |
+| Unicorn 2.1.4 and CE/WM patches | GPLv2; upstream `COPYING` and `COPYING.LGPL2`, plus file-specific notices | https://github.com/unicorn-engine/unicorn |
+| dynarmic | 0BSD; `dynarmic/LICENSE.txt`, plus licenses in its externals | https://github.com/azahar-emu/dynarmic |
+| SDL2 | zlib; upstream `LICENSE.txt`, plus file-specific notices | https://github.com/savegame/SDL |
+| Dear ImGui | MIT; `app/third_party/imgui/LICENSE.txt` | https://github.com/ocornut/imgui |
+| libslirp | BSD and file-specific licenses; `app/third_party/libslirp/COPYRIGHT` | https://gitlab.freedesktop.org/slirp/libslirp |
+| curl headers | curl license; copyright and permission notices in the included headers | https://curl.se/ |
+| Noto Sans | SIL Open Font License 1.1; see `licenses/OFL-NotoSans.txt` | https://github.com/notofonts/latin-greek-cyrillic |
+| Boost, for optional dynarmic desktop builds | Boost Software License 1.0 | https://www.boost.org/ |
+
+The release source archive includes the application, ported dependency
+snapshots, SDL2 source, patched Unicorn source, and the build configuration used to build
+the Android binary. The patches are also maintained in `app/engine`.
+
+ROMs and vendor firmware are not included and remain the property of their
+respective owners. Screenshots show guest software for illustration; they
+do not grant redistribution rights to that software.

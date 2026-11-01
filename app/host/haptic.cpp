@@ -1,5 +1,24 @@
 #include "haptic.h"
-#ifdef CEWM_HAVE_DBUS
+#ifdef __ANDROID__
+#include <SDL.h>
+#include <jni.h>
+#include "../android/app_class.h"
+namespace cewm {
+void HapticTick() {
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    static jmethodID tick = nullptr;
+    static jclass cls = nullptr;
+    if (!cls) {
+        jclass c = AppClass(env, "ru.erhoof.cewm.Haptic");
+        if (!c) return;
+        cls = (jclass)env->NewGlobalRef(c);
+        tick = env->GetStaticMethodID(cls, "tick", "()V");
+    }
+    env->CallStaticVoidMethod(cls, tick);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+}  // namespace cewm
+#elif defined(CEWM_HAVE_DBUS)
 #include <dbus/dbus.h>
 
 namespace cewm {

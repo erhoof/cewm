@@ -116,10 +116,17 @@ std::vector<HostWidget*>& Widgets() {
     static std::vector<HostWidget*> w;
     return w;
 }
+std::mutex g_widgets_mu;  // the boot thread registers while the frontend polls
 }  // namespace
-void HostWidgetRegistry::Register(HostWidget* w) { Widgets().push_back(w); }
+void HostWidgetRegistry::Register(HostWidget* w) { std::lock_guard<std::mutex> lk(g_widgets_mu); Widgets().push_back(w); }
 void cewm::PollWidgets() {
+    std::lock_guard<std::mutex> lk(g_widgets_mu);
     for (HostWidget* w : Widgets()) w->PollDirty();
+}
+// The widgets die with the emulator: forget them first, or the frontend polls freed objects after leaving the guest.
+void cewm::ClearWidgets() {
+    std::lock_guard<std::mutex> lk(g_widgets_mu);
+    Widgets().clear();
 }
 std::vector<HostWidget*> HostWidgetRegistry::Ordered() { return {}; }
 HMENU HostWidgetRegistry::BuildContextMenu(const std::vector<WidgetMenuItem>&) { return nullptr; }

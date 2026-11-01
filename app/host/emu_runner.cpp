@@ -1,10 +1,13 @@
 #include "emu_runner.h"
+#include "../src/i18n.h"
 #include "host_state.h"
+#include "ril_android.h"
 
 #include "core/cerf_emulator.h"
 #include "core/log.h"
 #include "execution/jit_runner.h"
 #include "state/hibernation.h"
+#include "socs/guest_cpu_reset.h"
 #include "host/panel_frame_renderer.h"
 #include "host/guest_additions_frame_renderer.h"
 #include "http_proxy.h"
@@ -76,6 +79,7 @@ void EmuStart(const std::string& rom, int w, int h, const std::string& state_pat
         }
     }
     if (getenv("CEWM_PROXY")) fprintf(stderr, "[PROXY] listening on %d\n", StartHttpProxy(18080));  // guest sees it as 10.0.2.2:18080
+    g_argv.clear();
     for (auto& a : g_args) g_argv.push_back(a.data());
     g_argv.push_back(nullptr);
     Host().calibrating = false;
@@ -88,6 +92,7 @@ void EmuStart(const std::string& rom, int w, int h, const std::string& state_pat
     ParseCerfArgs((int)g_args.size(), g_argv.data(), cfg);
     g_emu = std::make_unique<CerfEmulator>(cfg, (int)g_args.size(), g_argv.data());
     g_emu->Boot();
+    AndroidRil("vm:started");
     if (getenv("CEWM_PCLOG")) {  // test hook: print the guest PC every CEWM_PCLOG ms to see whether it is stuck
         g_pclog_stop = false;
         std::thread([] {
@@ -103,11 +108,13 @@ void EmuStart(const std::string& rom, int w, int h, const std::string& state_pat
 void EmuStop(bool save) {
     std::lock_guard<std::mutex> lk(g_save_mu);
     if (!g_emu) return;
+    AndroidRil("vm:stopped");
     g_pclog_stop = true;
     g_emu->Get<JitRunner>().RequestStop();
     g_emu->WaitForExit();
     if (g_p525_persist_root) g_p525_persist_root();  // writable flash back to the VM's p525-root.img
     if (save && !Host().state_path.empty() && !Host().powered_down) g_emu->Get<Hibernation>().Save(L"");
+    cewm::ClearWidgets();
     g_emu.reset();
 }
 
@@ -137,6 +144,13 @@ bool EmuGrabFrame(std::vector<uint32_t>& bgra, uint32_t& w, uint32_t& h) {
     if (w == 0 || h == 0) return false;
     bgra.resize(static_cast<size_t>(w) * h);
     fr->RenderInto(bgra.data(), w, h);
+    return true;
+}
+
+bool EmuSoftReset() {
+    std::lock_guard<std::mutex> lk(g_save_mu);
+    if (!g_emu || !DeviceEmulator(Host().board_id.c_str())) return false;
+    g_emu->Get<GuestCpuReset>().WarmReset();
     return true;
 }
 

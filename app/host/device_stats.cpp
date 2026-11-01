@@ -8,6 +8,13 @@
 
 #include "host_state.h"
 
+#ifdef __ANDROID__
+#include <SDL.h>
+#include <jni.h>
+#include <sstream>
+#include "../android/app_class.h"
+#endif
+
 #ifdef CEWM_HAVE_DBUS
 #include <dbus/dbus.h>
 namespace {
@@ -113,6 +120,40 @@ void Wifi(DBusConnection* c) {
 
 namespace cewm {
 void StartDeviceStats() {
+#ifdef __ANDROID__
+    // ru.erhoof.cewm.Stats.poll() answers "key=value" lines: batt, charging, operator, plmn, act, cell, wifi (see Stats.java).
+    std::thread([] {
+        JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+        jclass cls = AppClass(env, "ru.erhoof.cewm.Stats");
+        if (!cls) return;
+        jmethodID poll = env->GetStaticMethodID(cls, "poll", "()Ljava/lang/String;");
+        for (;;) {
+            jstring js = (jstring)env->CallStaticObjectMethod(cls, poll);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            else if (js) {
+                const char* t = env->GetStringUTFChars(js, nullptr);
+                static std::string last;
+                if (last != t) { last = t; SDL_Log("stats: %s", t); }
+                std::istringstream in(t);
+                env->ReleaseStringUTFChars(js, t);
+                for (std::string l; std::getline(in, l);) {
+                    const size_t eq = l.find('=');
+                    if (eq == std::string::npos) continue;
+                    const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+                    HostState& h = Host();
+                    if (k == "batt") h.battery_percent = atoi(v.c_str());
+                    else if (k == "charging") h.on_battery = v != "1";
+                    else if (k == "cell") h.cell_signal = atoi(v.c_str());
+                    else if (k == "wifi") h.wifi_signal = atoi(v.c_str());
+                    else if (k == "act") h.cell_act = atoi(v.c_str());
+                    else if (k == "operator") { std::lock_guard<std::mutex> lk(h.info_mu); h.operator_name = v; }
+                    else if (k == "plmn") { std::lock_guard<std::mutex> lk(h.info_mu); h.operator_plmn = v; }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
+    }).detach();
+#endif
 #ifdef CEWM_HAVE_DBUS
     std::thread([] {
         DBusConnection* c = dbus_bus_get_private(DBUS_BUS_SYSTEM, nullptr);

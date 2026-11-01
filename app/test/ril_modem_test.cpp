@@ -1,0 +1,103 @@
+#include "ril_modem.h"
+#include <cstdlib>
+#include <iostream>
+
+#define CHECK(x) do { if (!(x)) { std::cerr << "line " << __LINE__ << ": " #x "\n"; std::exit(1); } } while (0)
+int main() {
+    cewm::RilModem m;
+    bool numeric = false, no_echo = true;
+    int legacy_calls = 0, calls = 0;
+    std::string number;
+    auto feed = [&](const std::string& s) {
+        std::string out;
+        for (unsigned char c : s) out += m.Feed(c, numeric, no_echo,
+            [&](const std::string&, bool&, bool&) { ++legacy_calls; return "legacy"; });
+        return out;
+    };
+    CHECK(feed("ATD+12345;\r") == "\r\nERROR\r\n");
+    m.dial = [&](const std::string& n) { ++calls; number = n; return true; };
+    CHECK(feed("atd+123") == "");
+    CHECK(feed("45;\r") == "\r\nOK\r\n" && calls == 1 && number == "+12345");
+    CHECK(feed("ATD123;ATH\r") == "\r\nERROR\r\n" && calls == 1);
+    CHECK(feed("ATD*123#;\r") == "\r\nERROR\r\n" && calls == 1);
+    CHECK(feed("ATD123\r") == "\r\nERROR\r\n");
+    CHECK(feed("ATD+;\r") == "\r\nERROR\r\n");
+    CHECK(feed("AT*ECAM=1\r").find("*ECAV: 1,1,1") != std::string::npos);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Active).find("*ECAV: 1,3,1") != std::string::npos);
+    CHECK(feed("AT+CLCC\r").find("+CLCC: 1,0,0,0,0,\"+12345\",145") != std::string::npos);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Idle).find("*ECAV: 1,0,1") != std::string::npos);
+    CHECK(feed("AT+CLCC\r") == "\r\nOK\r\n");
+    m.CallEvent(cewm::RilModem::CallState::Incoming, "123");
+    m.CallEvent(cewm::RilModem::CallState::Active);
+    CHECK(feed("AT+CLCC\r").find("+CLCC: 1,1,0,0,0") != std::string::npos);
+    m.CallEvent(cewm::RilModem::CallState::Incoming);
+    CHECK(feed("AT+CLCC\r").find("123") == std::string::npos);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Incoming, "1\r\nOK").find("1\r\nOK") == std::string::npos);
+    CHECK(feed("AT*ECAM=0\r") == "\r\nOK\r\n");
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Idle).empty());
+    numeric = true;
+    CHECK(feed("ATH\r") == "4\r");
+    m.hangup = [] { return true; };
+    CHECK(feed("AT+CHUP\r") == "0\r");
+    CHECK(feed("ATA\r") == "4\r");
+    m.answer = [] { return true; };
+    CHECK(feed("ATA\r") == "0\r");
+    std::string control;
+    m.control = [&](const std::string& cmd) { control = cmd; return cmd == "AT+CHLD=2" || cmd == "AT+VTS=5" || cmd == "AT+CMUT=0"; };
+    CHECK(feed("AT+CHLD=2\r") == "0\r" && control == "AT+CHLD=2");
+    CHECK(feed("AT+VTS=5\r") == "0\r" && control == "AT+VTS=5");
+    CHECK(feed("AT+CHLD=3\r") == "4\r");
+    CHECK(feed("AT+CMUT?\r") == "4\r");
+    m.muted = [] { return 1; };
+    CHECK(feed("AT+CMUT?\r").find("+CMUT: 1") != std::string::npos);
+    m.muted = [] { return -1; };
+    CHECK(feed("AT+CMUT?\r") == "4\r");
+    CHECK(feed("AT+CMUT=0\r") == "0\r" && control == "AT+CMUT=0");
+    CHECK(feed("AT+CMUT=2\r") == "4\r");
+    m.RestoreSession(3);
+    CHECK(m.Session() == 7);
+    CHECK(feed("AT*ECAM?\r").find("*ECAM: 1") != std::string::npos);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Active, "123").find("*ECAV: 1,3,1") != std::string::npos);
+    m.CallEvent(cewm::RilModem::CallState::Active, "123", 1);
+    CHECK(feed("AT+CLCC\r").find("+CLCC: 1,1,0,0,0") != std::string::npos);
+    m.CallEvent(cewm::RilModem::CallState::Active, "456", 0);
+    CHECK(feed("AT+CLCC\r").find("+CLCC: 1,0,0,0,0") != std::string::npos);
+    m.Reset();
+    CHECK(m.Session() == 4);
+    m.RestoreSession(0, true);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Active, "123").find("*ECAV: 1,3,1") != std::string::npos);
+    m.RestoreSession(0, false);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Active).empty());
+    m.RestoreSession(4, true);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Active).empty());
+    numeric = false;
+    CHECK(feed("AT*ECAM=0\r") == "\r\nOK\r\n");
+    const unsigned disabled = m.Session();
+    m.RestoreSession(disabled, true);
+    CHECK(m.CallEvent(cewm::RilModem::CallState::Active).empty());
+    numeric = false;
+    CHECK(feed("AT+CMGF?\r") == "\r\n+CMGF: 0\r\n\r\nOK\r\n");
+    CHECK(feed("AT+CMGF=1\r") == "\r\nERROR\r\n");
+    CHECK(feed("AT+CMSS=1\r") == "\r\n+CMS ERROR: 303\r\n");
+    CHECK(m.SmsEvent("0000").empty());
+    CHECK(feed("AT+CNMI=2,2,0,1,0\r") == "\r\nOK\r\n");
+    CHECK(m.SmsEvent("0000") == "\r\n+CMT: ,1\r\n0000\r\n");
+    CHECK(m.SmsEvent("0001").empty());
+    CHECK(m.SmsEvent("ff00").empty());
+    CHECK(m.SmsEvent("00\r\nOK").empty());
+    CHECK(feed("AT+CMGS=256\r") == "\r\n+CMS ERROR: 304\r\n");
+    CHECK(feed("AT+CMGS=1\r") == "\r\n> ");
+    CHECK(feed("0001\r\n") == "");
+    CHECK(feed(std::string(1, 0x1a)) == "\r\n+CMS ERROR: 500\r\n");
+    CHECK(feed("AT+CMGS=1\r") == "\r\n> ");
+    CHECK(feed("gggg" + std::string(1, 0x1a)) == "\r\n+CMS ERROR: 500\r\n");
+    CHECK(legacy_calls == 0);
+    CHECK(feed("AT+CMGS=1\r") == "\r\n> ");
+    CHECK(feed(std::string(1, 0x1b)) == "\r\nOK\r\n");
+    CHECK(feed("AT+CSQ\r") == "legacy" && legacy_calls == 1);
+    CHECK(feed(std::string(513, 'A') + "\r") == "\r\nERROR\r\n");
+    CHECK(feed("AT+CMGS=1\r") == "\r\n> ");
+    m.Reset();
+    CHECK(feed("AT+CSQ\r") == "legacy");
+    std::cout << "RIL transport checks passed\n";
+}

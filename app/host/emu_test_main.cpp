@@ -40,6 +40,55 @@ int main(int argc, char** argv) {
             fprintf(stderr, "[TEST] t+%ds frame hash %016llx insns %.1fM\n", i + 1, (unsigned long long)sum, cerfengine::InterpInsnCount() / 1e6);
         }
     }
+    if (got && getenv("CEWM_TEST_START")) {
+        cewm::EmuKey(0x5b, false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        cewm::EmuKey(0x5b, true);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        got = cewm::EmuGrabFrame(px, w, h);
+    }
+    if (got) if (const char* keys = getenv("CEWM_TEST_KEYS")) {
+        // Comma-separated hex Windows virtual keys: 72 = WM Talk, 73 = End.
+        for (const char* p = keys; *p;) {
+            char* end = nullptr;
+            const unsigned long vk = strtoul(p, &end, 16);
+            if (end == p || vk > 255 || (*end && *end != ',')) { fprintf(stderr, "[TEST] invalid key list\n"); cewm::EmuStop(false); return 2; }
+            cewm::EmuKey((uint8_t)vk, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            cewm::EmuKey((uint8_t)vk, true);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            p = *end ? end + 1 : end;
+        }
+        got = cewm::EmuGrabFrame(px, w, h);
+    }
+    if (got) if (const char* taps = getenv("CEWM_TEST_TAPS")) {
+        // Guest pixel coordinates x:y,x:y for exercising phone controls without a window.
+        for (const char* p = taps; *p;) {
+            char *endx = nullptr, *endy = nullptr;
+            const long x = strtol(p, &endx, 10);
+            const long y = *endx == ':' ? strtol(endx + 1, &endy, 10) : -1;
+            if (endx == p || !endy || endy == endx + 1 || x < 0 || y < 0 || x >= w || y >= h || (*endy && *endy != ',')) {
+                fprintf(stderr, "[TEST] invalid tap list\n"); cewm::EmuStop(false); return 2;
+            }
+            cewm::EmuPen(true, x, y, w, h);
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            cewm::EmuPen(false, x, y, w, h);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            cewm::EmuGrabFrame(px, w, h);
+            uint64_t sum = 0;
+            for (uint32_t pixel : px) sum = sum * 31 + pixel;
+            fprintf(stderr, "[TEST] tap %ld,%ld frame hash %016llx\n", x, y, (unsigned long long)sum);
+            p = *endy ? endy + 1 : endy;
+        }
+        got = cewm::EmuGrabFrame(px, w, h);
+    }
+    if (getenv("CEWM_TEST_SOFT_RESET")) {
+        if (!cewm::EmuSoftReset()) { cewm::EmuStop(false); return 3; }
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+        cewm::PollWidgets();
+        if (!cewm::EmuGrabFrame(px, w, h)) { cewm::EmuStop(false); return 4; }
+        fprintf(stderr, "[TEST] soft reset: frame available %ux%u\n", w, h);
+    }
     if (getenv("CEWM_LIVESAVE")) {  // save while the guest keeps running, then die without a clean stop
         cewm::EmuSnapshot();
         std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -60,4 +109,5 @@ int main(int argc, char** argv) {
         fclose(f);
     }
     cewm::EmuStop(st && got && !getenv("CEWM_NOSAVE"));
+    return got ? 0 : 1;
 }

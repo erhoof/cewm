@@ -1,6 +1,8 @@
 [submodule "cerf"]
 	path = cerf
-	url = https://github.com/gweslab/cerf
+	branch = vendor/cerf
+	url = https://github.com/erhoof/cewm.git
 [submodule "dynarmic"]
 	path = dynarmic
-	url = https://github.com/azahar-emu/dynarmic
+	branch = vendor/dynarmic
+	url = https://github.com/erhoof/cewm.git

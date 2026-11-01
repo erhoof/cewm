@@ -34,4 +34,5 @@ HostState& Host();
 namespace cewm {
 // Call from the frontend loop: lets widgets (battery) push changed host state into the emulated hardware.
 void PollWidgets();
+void ClearWidgets();  // the emulator is going away: drop the registered widgets
 }  // namespace cewm

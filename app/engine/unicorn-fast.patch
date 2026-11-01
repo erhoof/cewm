@@ -1,0 +1,183 @@
+diff --git a/qemu/accel/tcg/cputlb.c b/qemu/accel/tcg/cputlb.c
+index 3d0bebd..0e341c2 100644
+--- a/qemu/accel/tcg/cputlb.c
++++ b/qemu/accel/tcg/cputlb.c
+@@ -718,6 +718,19 @@ void tlb_reset_dirty(CPUState *cpu, ram_addr_t start1, ram_addr_t length)
+     }
+ }
+ 
++/* symvm: make every writable TLB entry that maps the host page behind code at `vaddr` notdirty again */
++void tlb_protect_code_host(CPUState *cpu, target_ulong vaddr)
++{
++    struct uc_struct *uc = cpu->uc;
++    CPUArchState *env = cpu->env_ptr;
++    int mmu_idx = cpu_mmu_index(env, true);
++    CPUTLBEntry *entry = tlb_entry(env, mmu_idx, vaddr);
++    if (!tlb_hit(uc, entry->addr_code, vaddr)) {
++        return;
++    }
++    tlb_reset_dirty(cpu, (vaddr & TARGET_PAGE_MASK) + entry->addend, TARGET_PAGE_SIZE);
++}
++
+ void tlb_reset_dirty_by_vaddr(CPUState *cpu, target_ulong start1, target_ulong length)
+ {
+     struct uc_struct *uc = cpu->uc;
+@@ -1209,7 +1222,7 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
+     // - or doing snapshot
+     // , then never clean the tlb
+     if (!(!mr || (tlbe->addr_write != -1 && mr->priority < cpu->uc->snapshot_level)) &&
+-            !(tlbe->addr_code != -1) &&
++            !page_has_tbs(cpu->uc, ram_addr) &&
+             !uc_mem_hook_installed(cpu->uc, tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK))) {
+         tlb_set_dirty(cpu, mem_vaddr);
+     }
+diff --git a/qemu/accel/tcg/translate-all.c b/qemu/accel/tcg/translate-all.c
+index 71b6b2b..ce1704e 100644
+--- a/qemu/accel/tcg/translate-all.c
++++ b/qemu/accel/tcg/translate-all.c
+@@ -421,6 +421,13 @@ static inline PageDesc *page_find(struct uc_struct *uc, tb_page_addr_t index)
+     return page_find_alloc(uc, index, 0);
+ }
+ 
++/* symvm: true when translated blocks exist on this (ram_addr space) page */
++bool page_has_tbs(struct uc_struct *uc, ram_addr_t addr)
++{
++    PageDesc *p = page_find(uc, addr >> TARGET_PAGE_BITS);
++    return p && p->first_tb;
++}
++
+ static void page_lock_pair(struct uc_struct *uc, PageDesc **ret_p1, tb_page_addr_t phys1,
+                            PageDesc **ret_p2, tb_page_addr_t phys2, int alloc);
+ 
+@@ -1840,8 +1847,11 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+ 
+     /* Undoes tlb_set_dirty in notdirty_write. */
+     if (!uc_mem_hook_installed(cpu->uc, tb->pc)) {
+-        tlb_reset_dirty_by_vaddr(cpu, pc & TARGET_PAGE_MASK,
+-                                (pc & ~TARGET_PAGE_MASK) + tb->size);
++        /* symvm: protect every TLB alias of the code pages (by host address), since notdirty_write marks pages without blocks dirty */
++        tlb_protect_code_host(cpu, pc);
++        if (phys_page2 != -1) {
++            tlb_protect_code_host(cpu, virt_page2);
++        }
+     }
+ 
+     /*
+diff --git a/qemu/accel/tcg/translator.c b/qemu/accel/tcg/translator.c
+index 72f21c4..130606d 100644
+--- a/qemu/accel/tcg/translator.c
++++ b/qemu/accel/tcg/translator.c
+@@ -32,6 +32,30 @@ void translator_loop_temp_check(DisasContextBase *db)
+ #endif
+ }
+ 
++/* symvm: the embedder's block clock lives in two host words {count, limit}. Each block adds its cost inline and calls the block hook only when count >= limit
++   (the embedder sets limit to the slice budget, or to 0 to see every block). */
++uint64_t *symvm_ctr;
++int symvm_exact_clock;   /* count every instruction (the block's num_insns) instead of bytes/4 */
++
++static void gen_symvm_block(TCGContext *tcg_ctx, void *uc, uint64_t pc)
++{
++    TCGv_i64 inc = tcg_const_i64(tcg_ctx, 0xf1f1f1f1);   /* patched: the clock cost of the block */
++    TCGv_ptr ctr = tcg_const_ptr(tcg_ctx, symvm_ctr);
++    TCGv_i64 count = tcg_temp_new_i64(tcg_ctx), limit = tcg_temp_new_i64(tcg_ctx);
++    TCGLabel *skip = gen_new_label(tcg_ctx);
++    tcg_gen_ld_i64(tcg_ctx, count, ctr, 0);
++    tcg_gen_add_i64(tcg_ctx, count, count, inc);
++    tcg_gen_st_i64(tcg_ctx, count, ctr, 0);
++    tcg_gen_ld_i64(tcg_ctx, limit, ctr, 8);
++    tcg_gen_brcond_i64(tcg_ctx, TCG_COND_LTU, count, limit, skip);
++    tcg_temp_free_i64(tcg_ctx, inc);
++    tcg_temp_free_ptr(tcg_ctx, ctr);
++    tcg_temp_free_i64(tcg_ctx, count);
++    tcg_temp_free_i64(tcg_ctx, limit);
++    gen_uc_tracecode(tcg_ctx, 0xf8f8f8f8, UC_HOOK_BLOCK_IDX, uc, pc);
++    gen_set_label(tcg_ctx, skip);
++}
++
+ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
+                      CPUState *cpu, TranslationBlock *tb, int max_insns)
+ {
+@@ -77,7 +101,8 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
+         ops->pc_sync(db, cpu);
+         prev_op = tcg_last_op(tcg_ctx);
+         block_hook = true;
+-        gen_uc_tracecode(tcg_ctx, 0xf8f8f8f8, UC_HOOK_BLOCK_IDX, uc, db->pc_first);
++        if (symvm_ctr) gen_symvm_block(tcg_ctx, uc, db->pc_first);
++        else gen_uc_tracecode(tcg_ctx, 0xf8f8f8f8, UC_HOOK_BLOCK_IDX, uc, db->pc_first);
+     }
+ 
+     // tcg_dump_ops(tcg_ctx, false, "translator loop");
+@@ -154,18 +179,16 @@ _end_loop:
+         TCGOp *tcg_op;
+ 
+         // Unicorn: patch the callback to have the proper block size.
+-        if (prev_op) {
+-            // As explained further up in the function where prev_op is
+-            // assigned, we move forward in the tail queue, so we're modifying the
+-            // move instruction generated by gen_uc_tracecode() that contains
+-            // the instruction size to assign the proper size (replacing 0xF1F1F1F1).
+-            tcg_op = QTAILQ_NEXT(prev_op, link);
+-        } else {
+-            // this basic block is the first emulated code ever,
+-            // so the basic block operand is the first operand
+-            tcg_op = QTAILQ_FIRST(&tcg_ctx->ops);
++        // symvm: the instruction count rides in the upper 16 bits (bytes stay in the lower), so a clock can count ARM and Thumb alike.
++        const uint32_t packed = db->tb->size | ((uint32_t)db->num_insns << 16);
++        for (tcg_op = prev_op ? QTAILQ_NEXT(prev_op, link) : QTAILQ_FIRST(&tcg_ctx->ops); tcg_op; tcg_op = QTAILQ_NEXT(tcg_op, link)) {
++            if (tcg_op->opc == INDEX_op_movi_i32 && tcg_op->args[1] == 0xf8f8f8f8) {
++                tcg_op->args[1] = packed;
++                break;
++            }
++            if (symvm_ctr && tcg_op->opc == INDEX_op_movi_i64 && tcg_op->args[1] == 0xf1f1f1f1) {
++                tcg_op->args[1] = symvm_exact_clock ? db->num_insns : (db->tb->size + 3) / 4;  /* default: the historic clock, bytes/4 (Thumb ticks at half rate) */
++            }
+         }
+-
+-        tcg_op->args[1] = db->tb->size;
+     }
+ }
+diff --git a/qemu/include/exec/exec-all.h b/qemu/include/exec/exec-all.h
+index 68c6567..1459b38 100644
+--- a/qemu/include/exec/exec-all.h
++++ b/qemu/include/exec/exec-all.h
+@@ -465,6 +465,8 @@ tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, target_ulong addr,
+ 
+ void tlb_reset_dirty(CPUState *cpu, ram_addr_t start1, ram_addr_t length);
+ void tlb_reset_dirty_by_vaddr(CPUState *cpu, target_ulong start1, target_ulong length);
++void tlb_protect_code_host(CPUState *cpu, target_ulong vaddr);
++bool page_has_tbs(struct uc_struct *uc, ram_addr_t addr);
+ void tlb_set_dirty(CPUState *cpu, target_ulong vaddr);
+ 
+ /* exec.c */
+diff --git a/qemu/include/exec/gen-icount.h b/qemu/include/exec/gen-icount.h
+index 8b484cb..f754eb8 100644
+--- a/qemu/include/exec/gen-icount.h
++++ b/qemu/include/exec/gen-icount.h
+@@ -32,6 +32,16 @@ static inline void gen_io_end(TCGContext *tcg_ctx)
+ 
+ static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
+ {
++    TCGLabel *skip = NULL;
++    if (tcg_ctx->delay_slot_flag == NULL) {
++        /* symvm: test the exit request inline; the helper (a call that spills every live register) only runs when one is pending.
++           The constants it needs are made after the branch: TCG temporaries do not live across it. */
++        TCGv_i32 req = tcg_temp_new_i32(tcg_ctx);
++        skip = gen_new_label(tcg_ctx);
++        tcg_gen_ld_i32(tcg_ctx, req, tcg_ctx->cpu_env, offsetof(ArchCPU, neg.icount_decr.u32) - offsetof(ArchCPU, env));
++        tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_GE, req, 0, skip);
++        tcg_temp_free_i32(tcg_ctx, req);
++    }
+     TCGv_ptr puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
+     TCGv_i32 tmp = tcg_const_i32(tcg_ctx, 0);
+     // Unicorn:
+@@ -43,6 +53,9 @@ static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
+     gen_helper_check_exit_request(tcg_ctx, puc, tmp);
+     tcg_temp_free_i32(tcg_ctx, tmp);
+     tcg_temp_free_ptr(tcg_ctx, puc);
++    if (skip) {
++        gen_set_label(tcg_ctx, skip);
++    }
+ }
+ 
+ static inline void gen_tb_end(TCGContext *tcg_ctx, TranslationBlock *tb, int num_insns)

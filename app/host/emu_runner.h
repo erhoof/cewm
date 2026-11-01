@@ -11,6 +11,8 @@ void EmuStart(const std::string& rom, int w, int h, const std::string& state_pat
 // With `save` the machine state is written to the state path after the guest is stopped.
 void EmuStop(bool save = false);
 void EmuSnapshot();
+// Device Emulator warm reboot: keeps RAM and its object store.
+bool EmuSoftReset();
 // If the guest has put up a frame, resizes `bgra` to the guest size and fills it (0xAARRGGBB pixels). Returns false before that.
 bool EmuGrabFrame(std::vector<uint32_t>& bgra, uint32_t& w, uint32_t& h);
 // Input from the frontend, in guest pixel coordinates / Windows virtual-key codes.

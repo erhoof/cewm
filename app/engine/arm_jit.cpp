@@ -15,6 +15,9 @@
 
 #include "../host_platform.h"
 #include "arm_interp.h"
+#ifdef CEWM_HAVE_UNICORN
+#include "arm_unicorn.h"
+#endif
 
 namespace cerfengine {
 
@@ -47,6 +50,7 @@ GuestEngine::RunStatus ArmJit::Run() {
         std::atomic_ref<uint32_t>(cpu_state_->chain_exit_request).fetch_and(~kChainExitReset, std::memory_order_acq_rel);
         host_->OnResetDelivered();
         cpu_->RaiseResetException();
+        FlushTranslationCache();  // reload Unicorn CP15 after reset, on the CPU thread
         return RunStatus::kRunning;
     }
 
@@ -67,6 +71,17 @@ GuestEngine::RunStatus ArmJit::Run() {
     cpu_state_->irq_interrupt_pending = gate.level;
     if (gate.raise) cpu_->RaiseIrqException(cpu_state_->gprs[ArmGpr::kR15]);
 
+#ifdef CEWM_HAVE_UNICORN
+    if (auto* unicorn = engine_.TryGet<ArmUnicorn>()) {
+        const int32_t left = static_cast<int32_t>(cpu_state_->guest_cycle_deadline - cpu_state_->guest_cycle_counter);
+        if (left <= 0) return RunStatus::kRunning;
+        auto run = [&] {
+            const auto n = unicorn->Run(static_cast<uint32_t>(left < 8192 ? left : 8192));
+            g_insn_count.store(g_insn_count.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+        };
+        return platform::CallHaltGuarded(run) ? RunStatus::kRunning : RunStatus::kHalted;
+    }
+#endif
     if (g_interp->DynEnabled()) {
         const int32_t left = static_cast<int32_t>(cpu_state_->guest_cycle_deadline - cpu_state_->guest_cycle_counter);
         if (left <= 0) return RunStatus::kRunning;
@@ -133,7 +148,11 @@ void ArmJit::PrintFatalDump() {
                    r[8], r[9], r[10], r[11], r[12], r[13], r[14]);
 }
 
-void ArmJit::FlushTranslationCache() {}  // nothing is cached
+void ArmJit::FlushTranslationCache() {
+#ifdef CEWM_HAVE_UNICORN
+    if (auto* unicorn = engine_.TryGet<ArmUnicorn>()) unicorn->Flush();
+#endif
+}
 void ArmJit::SetDmaRegion(uint32_t, uint32_t) {}
 
 std::optional<uint8_t*> ArmJit::PeekGuestVa(uint32_t va) {

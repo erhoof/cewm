@@ -95,10 +95,12 @@ namespace cerfengine { extern bool g_pc_hooks_on; }
 // HasPcTrace runs at every interpreted block entry; this bitmap answers "no hook here" without a hash lookup.
 // shortcut: bits are never cleared, a stale bit only costs one hash lookup; one filter shared by all TraceManagers.
 uint64_t g_cewm_pc_filter[1024];  // read directly by the interpreter (engine/arm_interp.cpp)
+std::vector<uint32_t> g_cewm_pc_addresses; // Unicorn installs ranged hooks, avoiding a callback on every instruction.
 #define g_pc_filter g_cewm_pc_filter
 static inline void PcFilterSet(uint32_t pc) { const uint32_t h = (pc >> 1) & 0xFFFFu; g_pc_filter[h >> 6] |= 1ull << (h & 63); }
 
 void TraceManager::OnPc(uint32_t runtime_va, TraceHandler handler) {
+    g_cewm_pc_addresses.push_back(runtime_va);
     PcFilterSet(runtime_va);
     cerfengine::g_pc_hooks_on = true;
     GuardUnique(runtime_va);
@@ -108,6 +110,7 @@ void TraceManager::OnPc(uint32_t runtime_va, TraceHandler handler) {
 void TraceManager::OnPcFiltered(uint32_t       runtime_va,
                                 TracePredicate predicate,
                                 TraceHandler   handler) {
+    g_cewm_pc_addresses.push_back(runtime_va);
     PcFilterSet(runtime_va);
     cerfengine::g_pc_hooks_on = true;
     GuardUnique(runtime_va);

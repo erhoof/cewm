@@ -10,8 +10,7 @@ CE-ROMs/
 plan/
 
 # vendored libraries and build output
-third_party/
-app/third_party/
+/third_party/
 app/build/
 app/RPMS/
 app/.sfdk/
@@ -22,3 +21,68 @@ app/.sfdk/
 .idea/
 *.swp
 .DS_Store
+
+# Android build output
+app/android/app/libs/
+app/android/app/build/
+app/android/app/src/main/assets/
+app/android/build/
+app/android/.gradle/
+app/android/local.properties
+
+# Release packages and local distributions (uploaded separately to Releases)
+*.apk
+*.aab
+/cewm-linux-*.zip
+/dist/
+
+# Python caches and local debugging output
+__pycache__/
+*.py[cod]
+/frame.ppm
+*.log
+
+# Signing credentials and local environment
+*.jks
+*.keystore
+.env
+.env.*
+
+# Empty scratch file from Android curl development
+/app/android/shim_curl_tmp
+
+# Private assistant state, conversations and session exports
+.claude/
+.claude-*/
+.codex/
+.agents/
+.aws/
+CLAUDE.md
+CLAUDE.local.md
+claude-session*
+claude_session*
+*claude*session*
+*session*claude*
+*.jsonl
+
+# Keep only the public README; local notes and helper build scripts stay private
+*.md
+!/README.md
+*.sh
+*.bat
+*.cmd
+/app/tools/
+/app/rpm/
+/app/android/gradlew
+/app/android/gradle/
+
+# Private signing material and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.pub
+signing.properties
+key.properties

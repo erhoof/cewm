@@ -1,3 +1,4 @@
+#include "../src/i18n.h"
 // ASUS P525 firmware -> bootable bundle (see p525_prepare.h). Mirrors app/tools/prepare_p525.py step by step.
 #include "p525_prepare.h"
 #include "p525_stub.h"
@@ -139,7 +140,7 @@ bool Prepare(const std::string& path, const std::string& out, const std::functio
     const Cap* kind = nullptr;
     std::string tmp;
     if (EndsWith(path, ".zip")) {
-        status(2, "Распаковка архива...");
+        status(2, cewm::L("Распаковка архива...", "Unpacking archive..."));
         tmp = out + "/.src";
         mkdir(tmp.c_str(), 0755);
         if (!romdl::UnzipFile(path, tmp, ".cap", err)) { RmDir(tmp); return false; }
@@ -154,65 +155,65 @@ bool Prepare(const std::string& path, const std::string& out, const std::functio
             }
             closedir(d);
         }
-        if (cap.empty()) { RmDir(tmp); err = "В архиве нет известной прошивки ASUS P525"; return false; }
+        if (cap.empty()) { RmDir(tmp); err = cewm::L("В архиве нет известной прошивки ASUS P525", "No supported ASUS P525 firmware in the archive"); return false; }
     } else {
         const std::string sha = romdb::Sha256File(path);
         for (const Cap& c : kCaps)
             if (sha == c.sha) kind = &c;
-        if (!kind) { err = "Неизвестная прошивка ASUS P525"; return false; }
+        if (!kind) { err = cewm::L("Неизвестная прошивка ASUS P525", "Unknown ASUS P525 firmware"); return false; }
     }
     auto fail = [&](const char* msg) { err = msg; if (!tmp.empty()) RmDir(tmp); return false; };
 
-    status(15, "Чтение прошивки...");
+    status(15, cewm::L("Чтение прошивки...", "Reading firmware..."));
     Bytes raw;
-    if (!ReadFile(cap, raw) || raw.size() < kDiskStart + 512) return fail("Не удалось прочитать прошивку");
+    if (!ReadFile(cap, raw) || raw.size() < kDiskStart + 512) return fail(cewm::L("Не удалось прочитать прошивку", "Could not read firmware"));
     if (!tmp.empty()) { RmDir(tmp); tmp.clear(); }
     static const uint8_t kKey[4] = {0xDF, 0xC0, 0x7B, 0xA8};
     for (size_t i = 0; i < raw.size(); i++) raw[i] ^= kKey[i & 3];
     // The CAP is a MBR disk image; its second partition holds the XPRESS-packed OS XIP.
     Bytes disk(raw.begin() + kDiskStart, raw.end());
     Bytes().swap(raw);
-    if (disk[510] != 0x55 || disk[511] != 0xAA) return fail("Нет таблицы разделов прошивки");
+    if (disk[510] != 0x55 || disk[511] != 0xAA) return fail(cewm::L("Нет таблицы разделов прошивки", "Missing firmware partition table"));
     const size_t pstart = (size_t)Rd32(disk, 446 + 16 + 8) * 512, pcount = (size_t)Rd32(disk, 446 + 16 + 12) * 512;
-    if (pstart + pcount > disk.size() || pcount < 0x44) return fail("Повреждена таблица разделов");
+    if (pstart + pcount > disk.size() || pcount < 0x44) return fail(cewm::L("Повреждена таблица разделов", "Damaged partition table"));
     const uint8_t* packed = &disk[pstart];
     size_t data_off = Rd32(disk, pstart + 0x34);
     const uint32_t blocks = Rd32(disk, pstart + 0x38), block_size = Rd32(disk, pstart + 0x3C), magic = Rd32(disk, pstart + 0x40);
-    if (magic != 0x58505253u || block_size != 4096 || 0x44 + 2ull * blocks > pcount) return fail("Неожиданный заголовок XIP");
-    status(25, "Распаковка системы...");
+    if (magic != 0x58505253u || block_size != 4096 || 0x44 + 2ull * blocks > pcount) return fail(cewm::L("Неожиданный заголовок XIP", "Unexpected XIP header"));
+    status(25, cewm::L("Распаковка системы...", "Unpacking system..."));
     Bytes image;
     image.reserve((size_t)blocks * block_size);
     for (uint32_t i = 0; i < blocks; i++) {
         const size_t sz = packed[0x44 + 2 * i] | packed[0x45 + 2 * i] << 8;
-        if (data_off + sz > pcount) return fail("Обрезан блок XIP");
+        if (data_off + sz > pcount) return fail(cewm::L("Обрезан блок XIP", "Truncated XIP block"));
         Bytes dec;
         if (sz == block_size) dec.assign(packed + data_off, packed + data_off + sz);
         else dec = Xpress(packed + data_off, sz, block_size);
-        if (dec.size() != block_size) return fail("Обрезан блок XIP");
+        if (dec.size() != block_size) return fail(cewm::L("Обрезан блок XIP", "Truncated XIP block"));
         image.insert(image.end(), dec.begin(), dec.end());
         data_off += sz;
     }
-    if (image.size() < 0x100 || memcmp(&image[0x40], "ECEC", 4)) return fail("Неверный образ XIP");
+    if (image.size() < 0x100 || memcmp(&image[0x40], "ECEC", 4)) return fail(cewm::L("Неверный образ XIP", "Invalid XIP image"));
 
-    status(55, "Подготовка образа...");
+    status(55, cewm::L("Подготовка образа...", "Preparing image..."));
     // Redirect only the original TrueFFS DLL entry and stream-device API to our stub.
     for (const Export& e : kExports) {
         const p525stub::Sym* s = nullptr;
         for (const auto& y : p525stub::kSyms)
             if (!strcmp(y.name, e.name)) s = &y;
         const size_t off = (size_t)kind->truffs_load - kBase + e.va - 0x03DA1000u;
-        if (!s || off + 8 > image.size()) return fail("Неожиданный образ TrueFFS");
+        if (!s || off + 8 > image.size()) return fail(cewm::L("Неожиданный образ TrueFFS", "Unexpected TrueFFS image"));
         Wr32(image, off, 0xE51FF004u);
         Wr32(image, off + 4, s->addr);
     }
     const size_t romhdr = Rd32(image, 0x44) - kBase;
-    if (romhdr + 84 + 3 * 32 > image.size() || Rd32(image, romhdr) != 0x01FA01FEu) return fail("Неожиданный образ XIP");
+    if (romhdr + 84 + 3 * 32 > image.size() || Rd32(image, romhdr) != 0x01FA01FEu) return fail(cewm::L("Неожиданный образ XIP", "Unexpected XIP image"));
     Wr32(image, romhdr, 0x01FA01E1u);  // the bootloader reserves writable DLL slots for IMGFS as well as XIP
     // Reuse the unused OSAXS debugger module as an XIP display carrier (the board swaps in the native LCD driver or the Guest Additions one).
     const size_t toc = romhdr + 84 + 2 * 32;
     const size_t name_off = Rd32(image, toc + 16) - kBase, e32 = Rd32(image, toc + 20) - kBase, o32 = Rd32(image, toc + 24) - kBase;
-    if (name_off + 12 > image.size() || e32 + 12 > image.size() || o32 + 20 > image.size() || memcmp(&image[name_off], "osaxst0.dll", 12)) return fail("Неожиданный носитель дисплея");
-    if (Rd32(image, e32 + 8) != 0x88652000u) return fail("Неожиданный носитель дисплея");
+    if (name_off + 12 > image.size() || e32 + 12 > image.size() || o32 + 20 > image.size() || memcmp(&image[name_off], "osaxst0.dll", 12)) return fail(cewm::L("Неожиданный носитель дисплея", "Unexpected display module"));
+    if (Rd32(image, e32 + 8) != 0x88652000u) return fail(cewm::L("Неожиданный носитель дисплея", "Unexpected display module"));
     const size_t carrier = image.size() - 0x100;
     memset(&image[carrier], 0, 16);
     memcpy(&image[carrier], "pxa27x_lcd.dll", 15);
@@ -222,35 +223,35 @@ bool Prepare(const std::string& path, const std::string& out, const std::functio
     Wr32(image, romhdr + 12, kBase + (uint32_t)image.size());
     // OEMPowerOff returns at once: CE still runs its power-up sequence without entering a PXA sleep.
     const size_t off = kind->power_off - kBase;
-    if (off + 8 > image.size() || Rd32(image, off) != 0xE92D41F0u || Rd32(image, off + 4) != 0xE24DD014u) return fail("Неожиданный OEMPowerOff");
+    if (off + 8 > image.size() || Rd32(image, off) != 0xE92D41F0u || Rd32(image, off + 4) != 0xE24DD014u) return fail(cewm::L("Неожиданный OEMPowerOff", "Unexpected OEMPowerOff"));
     Wr32(image, off, 0xE12FFF1Eu);  // bx lr
-    status(70, "Запись образов...");
-    if (!WriteFile(out + "/p525-bridge.nb0", image.data(), image.size())) return fail("Не удалось записать p525-bridge.nb0");
-    if (!WriteFile(out + "/p525-storage.bin", p525stub::kStorage, sizeof p525stub::kStorage)) return fail("Не удалось записать p525-storage.bin");
+    status(70, cewm::L("Запись образов...", "Writing images..."));
+    if (!WriteFile(out + "/p525-bridge.nb0", image.data(), image.size())) return fail(cewm::L("Не удалось записать p525-bridge.nb0", "Could not write p525-bridge.nb0"));
+    if (!WriteFile(out + "/p525-storage.bin", p525stub::kStorage, sizeof p525stub::kStorage)) return fail(cewm::L("Не удалось записать p525-storage.bin", "Could not write p525-storage.bin"));
 
     // Devices that are not modelled would only stall the desktop: their drivers' module names are made unloadable (an 'x' in front).
     for (const char* n : {"pcc_wlan.dll", "pxa27x_ipm.dll"}) {
         std::vector<uint8_t> enc;
         for (const char* c = n; *c; c++) { enc.push_back((uint8_t)*c); enc.push_back(0); }
         auto it = std::search(disk.begin(), disk.end(), enc.begin(), enc.end());
-        if (it == disk.end()) return fail("Неожиданный IMGFS");
+        if (it == disk.end()) return fail(cewm::L("Неожиданный IMGFS", "Unexpected IMGFS"));
         *it = 'x';
     }
     disk.resize(std::max(kMinDisk, disk.size()));
-    if (!WriteFile(out + "/p525-disk.bin", disk.data(), disk.size())) return fail("Не удалось записать p525-disk.bin");
+    if (!WriteFile(out + "/p525-disk.bin", disk.data(), disk.size())) return fail(cewm::L("Не удалось записать p525-disk.bin", "Could not write p525-disk.bin"));
     Bytes().swap(disk);
 
-    status(92, "Создание тома...");
+    status(92, cewm::L("Создание тома...", "Creating volume..."));
     const std::string root = out + "/p525-root.img";
     struct stat st;
     if (stat(root.c_str(), &st) != 0) {  // an existing volume keeps the user's data
         FILE* f = fopen(root.c_str(), "wb");
-        if (!f) return fail("Не удалось создать p525-root.img");
+        if (!f) return fail(cewm::L("Не удалось создать p525-root.img", "Could not create p525-root.img"));
         bool ok = ftruncate(fileno(f), (off_t)p525stub::kRootSize * 512) == 0;
         for (const auto& s : p525stub::kRootSectors) ok = ok && fseek(f, (long)s.index * 512, SEEK_SET) == 0 && fwrite(s.data, 1, 512, f) == 512;
-        if (fclose(f) != 0 || !ok) return fail("Не удалось создать p525-root.img");
+        if (fclose(f) != 0 || !ok) return fail(cewm::L("Не удалось создать p525-root.img", "Could not create p525-root.img"));
     }
-    status(100, "Готово");
+    status(100, cewm::L("Готово", "Done"));
     return true;
 }
 }  // namespace cewm::p525

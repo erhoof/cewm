@@ -1,3 +1,4 @@
+#include "../src/i18n.h"
 // ROM bundle download: manifest.json -> roms/<name>/rom.zip -> SHA-256 check -> unzip. No zlib dependency: a small inflate is below.
 #include "rom_download.h"
 #include "../src/romdb.h"
@@ -169,33 +170,33 @@ uint32_t R32(const uint8_t* p) { return R16(p) | R16(p + 2) << 16; }
 
 // Unpacks every file of the archive into dir (flat: only the base name is used, so a hostile archive cannot write elsewhere).
 bool Unzip(const std::vector<uint8_t>& z, const std::string& dir, std::string& err, const char* only_ext = nullptr) {
-    if (z.size() < 22) { err = "архив повреждён"; return false; }
+    if (z.size() < 22) { err = cewm::L("архив повреждён", "Archive is damaged"); return false; }
     size_t e = z.size() - 22;
     while (e > 0 && R32(&z[e]) != 0x06054b50) e--;
-    if (R32(&z[e]) != 0x06054b50) { err = "архив повреждён"; return false; }
+    if (R32(&z[e]) != 0x06054b50) { err = cewm::L("архив повреждён", "Archive is damaged"); return false; }
     const uint32_t count = R16(&z[e + 10]);
     size_t p = R32(&z[e + 16]);
     for (uint32_t i = 0; i < count; i++) {
-        if (p + 46 > z.size() || R32(&z[p]) != 0x02014b50) { err = "архив повреждён"; return false; }
+        if (p + 46 > z.size() || R32(&z[p]) != 0x02014b50) { err = cewm::L("архив повреждён", "Archive is damaged"); return false; }
         const uint32_t method = R16(&z[p + 10]), csize = R32(&z[p + 20]), usize = R32(&z[p + 24]);
         const size_t nlen = R16(&z[p + 28]), elen = R16(&z[p + 30]), clen = R16(&z[p + 32]), loff = R32(&z[p + 42]);
-        if (p + 46 + nlen > z.size()) { err = "архив повреждён"; return false; }
+        if (p + 46 + nlen > z.size()) { err = cewm::L("архив повреждён", "Archive is damaged"); return false; }
         std::string name((const char*)&z[p + 46], nlen);
         p += 46 + nlen + elen + clen;
         const size_t sl = name.find_last_of('/');
         if (sl != std::string::npos) name = name.substr(sl + 1);
         if (name.empty() || name == "." || name == "..") continue;  // a folder entry
         if (only_ext && (name.size() < strlen(only_ext) || strcasecmp(name.c_str() + name.size() - strlen(only_ext), only_ext))) continue;
-        if (usize > kMaxUnpacked || loff + 30 > z.size() || R32(&z[loff]) != 0x04034b50) { err = "архив повреждён"; return false; }
+        if (usize > kMaxUnpacked || loff + 30 > z.size() || R32(&z[loff]) != 0x04034b50) { err = cewm::L("архив повреждён", "Archive is damaged"); return false; }
         const size_t data = loff + 30 + R16(&z[loff + 26]) + R16(&z[loff + 28]);
-        if (data + csize > z.size()) { err = "архив повреждён"; return false; }
+        if (data + csize > z.size()) { err = cewm::L("архив повреждён", "Archive is damaged"); return false; }
         std::vector<uint8_t> out(usize);
         if (method == 0 && csize == usize) memcpy(out.data(), &z[data], usize);
-        else if (method != 8 || !Inflate(&z[data], csize, out)) { err = "не удалось распаковать " + name; return false; }
+        else if (method != 8 || !Inflate(&z[data], csize, out)) { err = cewm::L("не удалось распаковать ", "Could not unpack ") + name; return false; }
         FILE* f = fopen((dir + "/" + name).c_str(), "wb");
-        if (!f) { err = "не удалось записать " + name; return false; }
+        if (!f) { err = cewm::L("не удалось записать ", "Could not write ") + name; return false; }
         const bool ok = fwrite(out.data(), 1, out.size(), f) == out.size();
-        if (fclose(f) != 0 || !ok) { err = "нет места для " + name; return false; }
+        if (fclose(f) != 0 || !ok) { err = cewm::L("нет места для ", "Not enough space for ") + name; return false; }
     }
     return true;
 }
@@ -237,7 +238,7 @@ bool Fetch(const std::string& url, Sink& sink, bool progress, std::string& err) 
     }
     const CURLcode rc = curl_easy_perform(c);
     curl_easy_cleanup(c);
-    if (rc != CURLE_OK) { err = std::string("нет связи: ") + curl_easy_strerror(rc); return false; }
+    if (rc != CURLE_OK) { err = std::string(cewm::L("нет связи: ", "Connection failed: ")) + curl_easy_strerror(rc); return false; }
     return true;
 }
 
@@ -254,31 +255,31 @@ std::string Field(const std::string& m, size_t from, size_t to, const char* key)
 
 void Run(std::string name, std::string dir) {
     std::string err, man;
-    Set(1, 0, "Подготовка...");
+    Set(1, 0, cewm::L("Подготовка...", "Preparing..."));
     Sink ms{&man, nullptr, 0};
     if (!Fetch(std::string(kBase) + "manifest.json", ms, false, err)) { Set(3, 0, err); g_busy = false; return; }
     const size_t b = man.find("\"name\": \"" + name + "\"");
-    if (b == std::string::npos) { Set(3, 0, "образа нет в каталоге"); g_busy = false; return; }
+    if (b == std::string::npos) { Set(3, 0, cewm::L("образа нет в каталоге", "Image is missing from the catalog")); g_busy = false; return; }
     size_t end = man.find("\"updated_at\"", man.find("\"updated_at\"", b) + 1);  // the next bundle's (this one's own comes right after its name)
     if (end == std::string::npos) end = man.size();
     const std::string sha = Field(man, b, end, "archive_sha256"), path = Field(man, b, end, "archive_path"), primary = Field(man, b, end, "primary"), board = Field(man, b, end, "id"), label = Field(man, man.find("\"os\"", b), end, "name");
     const size_t size = strtoull(Field(man, b, end, "archive_size").c_str(), nullptr, 10);
-    if (sha.size() != 64 || path.empty() || primary.empty() || path.find("..") != std::string::npos) { Set(3, 0, "каталог повреждён"); g_busy = false; return; }
+    if (sha.size() != 64 || path.empty() || primary.empty() || path.find("..") != std::string::npos) { Set(3, 0, cewm::L("каталог повреждён", "Catalog is damaged")); g_busy = false; return; }
 
     const std::string out = dir + "/" + name;
     mkdir(dir.c_str(), 0755);
     mkdir(out.c_str(), 0755);
     const std::string zip = out + "/.rom.zip";
-    Set(1, 0, "Загрузка...");
+    Set(1, 0, cewm::L("Загрузка...", "Downloading..."));
     FILE* f = fopen(zip.c_str(), "wb");
-    if (!f) { Set(3, 0, "нельзя записать в " + out); g_busy = false; return; }
+    if (!f) { Set(3, 0, cewm::L("нельзя записать в ", "Cannot write to ") + out); g_busy = false; return; }
     Sink fs{nullptr, f, 0};
     const bool got = Fetch(std::string(kBase) + path, fs, true, err);
     fclose(f);
     if (!got) { remove(zip.c_str()); Set(3, 0, err); g_busy = false; return; }
-    Set(1, 90, "Проверка...");
-    if (fs.got != size || romdb::Sha256File(zip) != sha) { remove(zip.c_str()); Set(3, 0, "контрольная сумма не совпала"); g_busy = false; return; }
-    Set(1, 95, "Распаковка...");
+    Set(1, 90, cewm::L("Проверка...", "Verifying..."));
+    if (fs.got != size || romdb::Sha256File(zip) != sha) { remove(zip.c_str()); Set(3, 0, cewm::L("контрольная сумма не совпала", "Checksum mismatch")); g_busy = false; return; }
+    Set(1, 95, cewm::L("Распаковка...", "Unpacking..."));
     std::vector<uint8_t> z;
     if (FILE* r = fopen(zip.c_str(), "rb")) {
         z.resize(size);
@@ -287,10 +288,10 @@ void Run(std::string name, std::string dir) {
     }
     const bool ok = !z.empty() && Unzip(z, out, err);
     remove(zip.c_str());
-    if (!ok) { Set(3, 0, err.empty() ? "не удалось прочитать архив" : err); g_busy = false; return; }
+    if (!ok) { Set(3, 0, err.empty() ? cewm::L("не удалось прочитать архив", "Could not read archive") : err); g_busy = false; return; }
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        g_st = State{2, 100, "Готово", out + "/" + primary, board, label};
+        g_st = State{2, 100, cewm::L("Готово", "Done"), out + "/" + primary, board, label};
     }
     g_busy = false;
 }
@@ -305,7 +306,7 @@ bool UnzipFile(const std::string& zip, const std::string& dir, const char* only_
         if (n > 0) { z.resize(n); if (fread(z.data(), 1, z.size(), r) != z.size()) z.clear(); }
         fclose(r);
     }
-    if (z.empty()) { err = "не удалось прочитать архив"; return false; }
+    if (z.empty()) { err = cewm::L("не удалось прочитать архив", "Could not read archive"); return false; }
     return Unzip(z, dir, err, only_ext);
 }
 
